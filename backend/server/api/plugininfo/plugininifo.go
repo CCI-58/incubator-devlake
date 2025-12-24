@@ -81,14 +81,46 @@ type PluginMeta struct {
 
 type PluginMetas []PluginMeta
 
-func NewTableInfos(table dal.Tabler) *TableInfos {
-	tableInfos := &TableInfos{
-		TableName: table.TableName(),
-		Error:     nil,
+func NewTableInfos(table dal.Tabler) (tableInfos *TableInfos) {
+	tableInfos = &TableInfos{
+		Error: nil,
+		Field: make([]*TableInfo, 0),
 	}
 
+	// Handle panic recovery for any unexpected errors during table parsing
+	defer func() {
+		if r := recover(); r != nil {
+			errstr := fmt.Sprintf("panic during table parsing: %v", r)
+			tableInfos.Error = &errstr
+		}
+	}()
+
+	// Check for nil interface
+	if table == nil {
+		errstr := "table is nil"
+		tableInfos.Error = &errstr
+		return tableInfos
+	}
+
+	// Check for typed-nil (interface is non-nil but underlying pointer is nil)
+	tableValue := reflect.ValueOf(table)
+	if tableValue.Kind() == reflect.Ptr && tableValue.IsNil() {
+		// Create a new instance of the underlying type to get table info
+		elemType := tableValue.Type().Elem()
+		newInstance := reflect.New(elemType).Interface()
+		if tabler, ok := newInstance.(dal.Tabler); ok {
+			table = tabler
+		} else {
+			errstr := "typed-nil table cannot be instantiated"
+			tableInfos.Error = &errstr
+			return tableInfos
+		}
+	}
+
+	tableInfos.TableName = table.TableName()
+
 	fieldInfos := utils.WalkFields(reflect.TypeOf(table), nil)
-	schema, err := schema.Parse(table, &sync.Map{}, schema.NamingStrategy{})
+	parsedSchema, err := schema.Parse(table, &sync.Map{}, schema.NamingStrategy{})
 	if err != nil {
 		errstr := err.Error()
 		tableInfos.Error = &errstr
@@ -99,8 +131,8 @@ func NewTableInfos(table dal.Tabler) *TableInfos {
 		dbName := ""
 		dataType := ""
 		gormDataType := ""
-		if schema != nil {
-			if dbfield, ok := schema.FieldsByName[field.Name]; ok {
+		if parsedSchema != nil {
+			if dbfield, ok := parsedSchema.FieldsByName[field.Name]; ok {
 				dbName = dbfield.DBName
 				dataType = string(dbfield.DataType)
 				gormDataType = string(dbfield.GORMDataType)
