@@ -62,7 +62,7 @@ func (c *Control) Authorized(key string) bool {
 }
 func Token(secret, operation string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte("cci-source-control-v1:" + operation))
+	_, _ = mac.Write([]byte("cci-source-control-v1:" + operation))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 

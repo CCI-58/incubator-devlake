@@ -35,7 +35,10 @@ type sourceControlRow struct {
 	Held       bool   `gorm:"not null;comment:Explicit completion required to release"`
 }
 
-func (sourceControlRow) TableName() string { return "_devlake_cci_source_control" }
+// SourceControlTable holds the singleton fence row and must survive data resets.
+const SourceControlTable = "_devlake_cci_source_control"
+
+func (sourceControlRow) TableName() string { return SourceControlTable }
 
 type sourceControlStore struct{ db dal.Dal }
 
