@@ -88,7 +88,7 @@ jobs:
           push: false
           tags: ${{ steps.source.outputs.image }}
           build-args: |
-            TAG=cci-source-control
+            TAG=v1.0.3-beta8-cci
             SHA=${{ steps.source.outputs.revision }}
           labels: |
             org.opencontainers.image.source=https://github.com/CCI-58/incubator-devlake
