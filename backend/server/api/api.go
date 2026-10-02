@@ -119,6 +119,9 @@ func SetupApiServer(router *gin.Engine) {
 	router.UseRawPath = true
 	// router.UnescapePathValues = false
 
+	registerSourceControl(router, services.SourceControl(), func() bool { return services.CurrentStatus() == services.SERVICE_STATUS_READY })
+	router.Use(sourceControlWrites(services.SourceControl()))
+
 	// Endpoint to proceed database migration
 	router.GET("/proceed-db-migration", func(ctx *gin.Context) {
 		// Execute database migration

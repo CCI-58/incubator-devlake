@@ -483,6 +483,15 @@ func getPipelineLogsPath(pipeline *models.Pipeline) (string, errors.Error) {
 
 // RerunPipeline would rerun all failed tasks or specified task
 func RerunPipeline(pipelineId uint64, task *models.Task) (tasks []*models.Task, err errors.Error) {
+	existing, err := GetDbPipeline(pipelineId)
+	if err != nil {
+		return nil, err
+	}
+	release, err := sourcePipeline(existing.BlueprintId)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	// prevent pipeline executor from doing anything that might jeopardize the integrity
 	pipeline := &models.Pipeline{}
 	txHelper := dbhelper.NewTxHelper(basicRes, &err)
