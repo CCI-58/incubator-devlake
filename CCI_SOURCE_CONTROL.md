@@ -24,6 +24,25 @@ a running CCI/DevLake pair.
 
 ## Contract
 
+### Existing beta8 deployment baseline
+
+The deployment inspected on 2026-10-03 reports `v1.0.3-beta8@cfe519c`.
+The first CCI image was built from the older fork main and lacked beta8's
+Bitbucket API-token support and Argo CD image-support migration/implementation.
+The live database already records `argocd add image support artifacts`
+(`20251102160000`), even though current Bitbucket/Argo CD connection counts are
+zero. Do not deploy that older image on the assumption that it is beta8 plus
+the CCI extension.
+
+This branch merges the official `v1.0.3-beta8` commit
+`cfe519cf9bb02eeec8e918024810b479c8be231d`, preserving the CCI persistent fence,
+SonarQube error handling, and image publication workflow. Existing core/plugin
+migration scripts now match beta8. The control table remains an additional
+startup AutoMigrate. This is baseline alignment, not an upgrade to beta18.
+Publish a new image after review and update GitOps from its successful main-run
+artifact. Existing-database restore/startup and CCI integration remain required;
+fresh-database smoke alone is not that evidence.
+
 ### Image publication and GitOps handoff
 
 `.github/workflows/cci-image.yml` builds the complete backend for linux/amd64,
