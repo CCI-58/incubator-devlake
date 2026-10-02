@@ -1,0 +1,151 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+name: CCI DevLake image
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['backend/**', '.github/workflows/cci-image.yml', 'scripts/cci-image-smoke.py']
+  push:
+    branches: [main]
+    paths: ['backend/**', '.github/workflows/cci-image.yml', 'scripts/cci-image-smoke.py']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cci-devlake-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ACR_NAME: ccicontainer
+  ACR_LOGIN_SERVER: ccicontainer.azurecr.io
+  IMAGE_NAME: devlake-cci
+
+jobs:
+  image:
+    if: github.repository == 'CCI-58/incubator-devlake'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    services:
+      mysql:
+        image: mysql:8.0.36
+        env:
+          MYSQL_ROOT_PASSWORD: ci-isolated-root
+          MYSQL_DATABASE: lake
+          MYSQL_USER: merico
+          MYSQL_PASSWORD: ci-isolated-db
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost --silent"
+          --health-interval=10s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Identify exact source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(git rev-parse HEAD)
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "image=${ACR_LOGIN_SERVER}/${IMAGE_NAME}:sha-${revision}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.24.13'
+          cache-dependency-path: backend/go.sum
+      - name: Source-control tests
+        working-directory: backend
+        run: go test -race ./helpers/sourcecontrol ./server/api -run 'Test(Persistent|Pipeline|Acquire|Invalid|Credentials|SourceControl)'
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - name: Build the complete backend with all native plugins
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: backend
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.source.outputs.image }}
+          build-args: |
+            TAG=cci-source-control
+            SHA=${{ steps.source.outputs.revision }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/CCI-58/incubator-devlake
+            org.opencontainers.image.revision=${{ steps.source.outputs.revision }}
+            io.cci.source-control.protocol=1
+          cache-from: type=gha,scope=cci-devlake-amd64
+          cache-to: type=gha,mode=max,scope=cci-devlake-amd64
+      - name: Verify the built image and durable control on isolated MySQL
+        env:
+          TEST_IMAGE: ${{ steps.source.outputs.image }}
+          TEST_REVISION: ${{ steps.source.outputs.revision }}
+        run: python3 scripts/cci-image-smoke.py
+      - name: Azure login for publication
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: azure/login@8216e11d8cd9b42fe925c852af8e76311ff067ac # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Publish the tested image and record its registry digest
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          TEST_IMAGE: ${{ steps.source.outputs.image }}
+          TEST_REVISION: ${{ steps.source.outputs.revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          az acr login --name "$ACR_NAME"
+          docker push "$TEST_IMAGE"
+          image_tag=${TEST_IMAGE#"${ACR_LOGIN_SERVER}/"}
+          digest=$(az acr repository show --name "$ACR_NAME" --image "$image_tag" --query digest -o tsv)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          export PUBLISHED_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_NAME}@${digest}"
+          docker buildx imagetools inspect "$PUBLISHED_IMAGE"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          release = {
+              "schemaVersion": 1,
+              "sourceRepository": "CCI-58/incubator-devlake",
+              "sourceRef": os.environ["GITHUB_REF"],
+              "sourceRevision": os.environ["TEST_REVISION"],
+              "image": os.environ["PUBLISHED_IMAGE"],
+              "platform": "linux/amd64",
+              "sourceControlProtocol": 1,
+              "verification": "source-control-tests-and-image-restart-smoke",
+              "runUrl": f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
+          }
+          Path("image-release.json").write_text(json.dumps(release, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("### Published CCI DevLake image\n\n" + release["image"] + "\n\nSource: " + release["sourceRevision"] + "\n\nUse image-release.json for the GitOps PR. Publication does not deploy it.\n")
+          PY
+      - name: Archive the GitOps handoff
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: devlake-image-${{ steps.source.outputs.revision }}
+          path: image-release.json
+          if-no-files-found: error
+          retention-days: 90

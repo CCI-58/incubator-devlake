@@ -24,7 +24,33 @@ a running CCI/DevLake pair.
 
 ## Contract
 
-The existing API authentication remains required. Control endpoints additionally
+### Image publication and GitOps handoff
+
+`.github/workflows/cci-image.yml` builds the complete backend for linux/amd64,
+runs source-control tests and starts the actual image on disposable MySQL. The
+smoke test checks the source SHA, authentication, fence persistence across a
+backend restart, and explicit release. PR builds never publish. Successful main
+builds push that same tested image to `ccicontainer.azurecr.io/devlake-cci` and
+archive `image-release.json` with its immutable registry digest and workflow URL.
+This smoke test does not replace migration/restore or CCI integration testing.
+
+The fork repository needs `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and
+`AZURE_SUBSCRIPTION_ID` Actions secrets and Azure OIDC federation restricted to
+`repo:CCI-58/incubator-devlake:ref:refs/heads/main`, with ACR push permission.
+Updating a personal GitHub PAT does not configure these credentials.
+The legacy DockerHub publication workflows are disabled in this fork.
+
+GitOps consumes the release artifact after verifying the successful main run.
+Only the test tenant is prepared initially; registry pull credentials and the
+shared control Secret must exist before rollout. Keep one backend replica and
+Recreate strategy. The image identifies itself by fork SHA, not as official
+beta18. Publication, GitOps promotion and actual CCI compatibility remain separate
+gates. No image has been published or deployed by this implementation work yet.
+
+### API authentication
+
+Existing `/rest` API authentication remains in force when using that routing path;
+direct internal routes do not enforce that bearer authentication. Control endpoints always
 require `X-CCI-Control-Key`, equal to the deployment environment variable
 `CCI_SOURCE_CONTROL_KEY` (at least 32 bytes). Keep this credential in the secret
 store, outside API-editable configuration. Do not put it in URLs or application logs.
