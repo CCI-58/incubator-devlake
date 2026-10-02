@@ -49,6 +49,7 @@ import (
 	"github.com/apache/incubator-devlake/impls/dalgorm"
 	"github.com/apache/incubator-devlake/impls/logruslog"
 	"github.com/apache/incubator-devlake/server/api"
+	"github.com/apache/incubator-devlake/server/services"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -61,6 +62,7 @@ var (
 		migration.MigrationHistory{}.TableName(),
 		models.LockingHistory{}.TableName(),
 		models.LockingStub{}.TableName(),
+		services.SourceControlTable,
 	}
 )
 

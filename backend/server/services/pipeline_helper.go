@@ -32,6 +32,16 @@ var createDbPipelineLock sync.Mutex
 
 // CreateDbPipeline returns a NewPipeline
 func CreateDbPipeline(newPipeline *models.NewPipeline) (pipeline *models.Pipeline, err errors.Error) {
+	release, err := sourcePipeline(newPipeline.BlueprintId)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return createDbPipelineWithoutFence(newPipeline)
+}
+
+// Caller must hold pipeline admission from before constructing the plan.
+func createDbPipelineWithoutFence(newPipeline *models.NewPipeline) (pipeline *models.Pipeline, err errors.Error) {
 	createDbPipelineLock.Lock()
 	defer createDbPipelineLock.Unlock()
 	pipeline = &models.Pipeline{}

@@ -29,6 +29,7 @@ on:
 
 jobs:
   build-and-push-builder:
+    if: github.repository != 'CCI-58/incubator-devlake'
     name: Build and Push devlake builder
     runs-on: ubuntu-latest
     steps:
@@ -53,6 +54,7 @@ jobs:
           cache-from: ${{ secrets.DOCKERHUB_OWNER }}/devlake:amd64-builder
           cache-to: ${{ secrets.DOCKERHUB_OWNER }}/devlake:amd64-builder
   build-and-push-base:
+    if: github.repository != 'CCI-58/incubator-devlake'
     name: Build and Push devlake base
     runs-on: ubuntu-latest
     steps:
@@ -77,6 +79,7 @@ jobs:
           cache-from: ${{ secrets.DOCKERHUB_OWNER }}/devlake:base
           cache-to: ${{ secrets.DOCKERHUB_OWNER }}/devlake:base
   build-devlake:
+    if: github.repository != 'CCI-58/incubator-devlake'
     needs: build-and-push-builder
     name: Build and cache devlake
     runs-on: ubuntu-latest
@@ -115,6 +118,7 @@ jobs:
             TAG=${{ github.ref_name }}
             SHA=${{ steps.get_short_sha.outputs.SHORT_SHA }}
   get-timestamp:
+    if: github.repository != 'CCI-58/incubator-devlake'
     name: Get build timestamp
     runs-on: ubuntu-latest
     outputs:
@@ -124,6 +128,7 @@ jobs:
         id: ts
         run: echo "timestamp=$(date '+%y%m%d_%H%M')" >> $GITHUB_OUTPUT
   build-and-push-devlake:
+    if: github.repository != 'CCI-58/incubator-devlake'
     needs: [build-devlake, build-and-push-base, get-timestamp]
     name: Build and Push devlake image
     runs-on: ubuntu-latest
@@ -194,6 +199,7 @@ jobs:
             }
 
   build-and-push-other-image:
+    if: github.repository != 'CCI-58/incubator-devlake'
     needs: [get-timestamp]
     name: Build and Push ${{ matrix.build.name }} image
     runs-on: ubuntu-latest

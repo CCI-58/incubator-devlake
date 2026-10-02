@@ -72,5 +72,5 @@ ENV GOROOT=
 ENV PATH=${GOPATH}/bin:${PATH}
 
 # Python Poetry package manager
-RUN curl -sSL https://install.python-poetry.org | python3 -
+RUN curl -sSL https://install.python-poetry.org | POETRY_VERSION=2.2.1 python3 -
 RUN ln -sf /root/.local/bin/poetry /usr/local/bin

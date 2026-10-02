@@ -118,6 +118,7 @@ func Init() {
 
 	// lock the database to avoid multiple devlake instances from sharing the same one
 	lockDatabase()
+	initSourceControl()
 
 	// now, load the plugins
 	errors.Must(runner.LoadPlugins(basicRes))

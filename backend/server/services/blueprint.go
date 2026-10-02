@@ -54,7 +54,7 @@ type BlueprintJob struct {
 
 func (bj BlueprintJob) Run() {
 	blueprint := bj.Blueprint
-	pipeline, err := createPipelineByBlueprint(blueprint, &blueprint.SyncPolicy)
+	pipeline, err := createPipelineByBlueprint(blueprint, nil)
 	if err == ErrEmptyPlan {
 		blueprintLog.Info("Empty plan, blueprint id:[%d] blueprint name:[%s]", blueprint.ID, blueprint.Name)
 		return
@@ -310,6 +310,27 @@ func reloadBlueprint(blueprint *models.Blueprint) errors.Error {
 }
 
 func createPipelineByBlueprint(blueprint *models.Blueprint, syncPolicy *models.SyncPolicy) (*models.Pipeline, errors.Error) {
+	release, admissionErr := sourcePipeline(blueprint.ID)
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	defer release()
+	// A scheduled job may retain a blueprint from before the source change.
+	// Reload under admission so a stale plan cannot start after release.
+	current, loadErr := GetBlueprint(blueprint.ID, false)
+	if loadErr != nil {
+		return nil, loadErr
+	}
+	if !current.Enable {
+		return nil, errors.BadInput.New("blueprint is not enabled")
+	}
+	blueprint = current
+	if syncPolicy == nil {
+		syncPolicy = &blueprint.SyncPolicy
+	} else {
+		blueprint.SkipCollectors = syncPolicy.SkipCollectors
+		blueprint.FullSync = syncPolicy.FullSync
+	}
 	var plan models.PipelinePlan
 	var err errors.Error
 	if blueprint.Mode == models.BLUEPRINT_MODE_NORMAL {
@@ -346,7 +367,7 @@ func createPipelineByBlueprint(blueprint *models.Blueprint, syncPolicy *models.S
 	// if !shouldCreatePipeline {
 	// 	return nil, ErrEmptyPlan
 	// }
-	pipeline, err := CreatePipeline(&newPipeline, false)
+	pipeline, err := createDbPipelineWithoutFence(&newPipeline)
 	// Return all created tasks to the User
 	if err != nil {
 		blueprintLog.Error(err, fmt.Sprintf("%s on blueprint:[%d][%s]", failToCreateCronJob, blueprint.ID, blueprint.Name))
