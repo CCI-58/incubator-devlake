@@ -22,9 +22,7 @@ This is a fork extension; stock Apache beta8/beta18 do not provide this protocol
 The implementation is under review and has not been deployed or verified against
 a running CCI/DevLake pair.
 
-## Contract
-
-### Existing beta8 deployment baseline
+## Existing beta8 deployment baseline
 
 The deployment inspected on 2026-10-03 reports `v1.0.3-beta8@cfe519c`.
 The first CCI image was built from the older fork main and lacked beta8's
@@ -42,6 +40,21 @@ startup AutoMigrate. This is baseline alignment, not an upgrade to beta18.
 Publish a new image after review and update GitOps from its successful main-run
 artifact. Existing-database restore/startup and CCI integration remain required;
 fresh-database smoke alone is not that evidence.
+
+Merge this PR using **Create a merge commit**, not squash or rebase. Keep the
+official beta8 commit in the ancestry so future upstream merges use the correct
+merge base. After merging, verify:
+
+```sh
+git merge-base --is-ancestor cfe519cf9bb02eeec8e918024810b479c8be231d origin/main
+```
+
+The published `/version` is `v1.0.3-beta8-cci@<full fork SHA>`. The image smoke test
+checks this exact value. CCI must explicitly support this fork version after
+compatibility verification; the prefix is not proof that a stock beta8 image
+supports the control API. CCI's version gate remains a separate deployment task.
+
+## Contract
 
 ### Image publication and GitOps handoff
 

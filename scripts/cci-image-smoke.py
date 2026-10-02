@@ -83,8 +83,8 @@ def main():
     try:
         ready()
         version = request("GET", "/version", 200)
-        if revision not in json.dumps(version):
-            raise RuntimeError("Built image does not report its source revision")
+        if version != {"version": "v1.0.3-beta8-cci@" + revision}:
+            raise RuntimeError("Built image does not report its beta8 CCI version and exact source revision")
         request("POST", "/cci/source-control", 403, {"operation": OPERATION, "blueprints": []})
         request("POST", "/cci/source-control", 200, {"operation": OPERATION, "blueprints": []}, control=True)
         verify_held()
