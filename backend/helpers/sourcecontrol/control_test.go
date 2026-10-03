@@ -31,11 +31,33 @@ const otherOperation = "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"
 var secret = strings.Repeat("s", 32)
 
 type memoryStore struct {
-	mu    sync.Mutex
-	state State
-	fail  bool
+	mu        sync.Mutex
+	state     State
+	fail      bool
+	cancelled map[string]bool
+	failSave  bool
 }
 
+func (s *memoryStore) Cancelled(operation string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return false, errors.New("offline")
+	}
+	return s.cancelled[operation], nil
+}
+func (s *memoryStore) Cancel(operation string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return errors.New("offline")
+	}
+	if s.cancelled == nil {
+		s.cancelled = map[string]bool{}
+	}
+	s.cancelled[operation] = true
+	return nil
+}
 func (s *memoryStore) Load() (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -47,7 +69,7 @@ func (s *memoryStore) Load() (State, error) {
 func (s *memoryStore) Save(state State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.fail {
+	if s.fail || s.failSave {
 		return errors.New("offline")
 	}
 	s.state = state
@@ -204,5 +226,97 @@ func TestCredentialsAndInputs(t *testing.T) {
 	}
 	if err := c.Release("", operation); err != ErrUnavailable {
 		t.Fatal(err)
+	}
+}
+
+func TestCancellationSurvivesRestartAndOtherOperations(t *testing.T) {
+	store := &memoryStore{}
+	c := New(store, secret)
+	acquire(t, c)
+	if err := c.Cancel(secret, operation); err != nil {
+		t.Fatal(err)
+	}
+	c = New(store, secret)
+	if _, err := c.Acquire(secret, operation, []uint64{1, 2}); err != ErrHeld {
+		t.Fatalf("delayed acquire: %v", err)
+	}
+	if _, err := c.Acquire(secret, otherOperation, []uint64{3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Cancel(secret, operation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Check(secret, otherOperation); err != nil {
+		t.Fatalf("other fence changed: %v", err)
+	}
+	if _, err := c.Write(Token(secret, operation)); err != ErrHeld {
+		t.Fatalf("old token: %v", err)
+	}
+}
+func TestCancelBeforeAcquireAndFailedRelease(t *testing.T) {
+	store := &memoryStore{}
+	c := New(store, secret)
+	if err := c.Cancel(secret, operation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Acquire(secret, operation, nil); err != ErrHeld {
+		t.Fatal(err)
+	}
+	if err := c.Cancel("wrong", otherOperation); err != ErrUnavailable {
+		t.Fatal(err)
+	}
+	if _, err := c.Acquire(secret, otherOperation, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCancelReleaseFailureRemainsRetryable(t *testing.T) {
+	store := &memoryStore{}
+	c := New(store, secret)
+	acquire(t, c)
+	store.failSave = true
+	if err := c.Cancel(secret, operation); err != ErrUnavailable {
+		t.Fatal(err)
+	}
+	store.failSave = false
+	c = New(store, secret)
+	if _, err := c.Acquire(secret, operation, []uint64{1, 2}); err != ErrHeld {
+		t.Fatalf("tombstone lost: %v", err)
+	}
+	if err := c.Cancel(secret, operation); err != nil {
+		t.Fatal(err)
+	}
+	release, err := c.Write("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+}
+func TestCancelRacesDelayedAcquire(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		store := &memoryStore{}
+		c := New(store, secret)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, err := c.Acquire(secret, operation, nil)
+			if err != nil && err != ErrHeld {
+				t.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := c.Cancel(secret, operation); err != nil {
+				t.Error(err)
+			}
+		}()
+		wg.Wait()
+		if _, err := c.Check(secret, operation); err != ErrHeld {
+			t.Fatalf("fence resurrected: %v", err)
+		}
+		if _, err := New(store, secret).Acquire(secret, operation, nil); err != ErrHeld {
+			t.Fatal(err)
+		}
 	}
 }

@@ -147,3 +147,26 @@ Broad repository tests belong to CI. Before enabling application, jointly verify
 real database persistence across backend restart, protected cron/manual admission,
 already-admitted draining, webhook retry, owner updates, failed release/retry,
 and the CCI saved-result read gates. These integration checks remain outstanding.
+
+## Durable cancellation (cancellation capability 1)
+
+`GET /cci/source-control/capabilities` requires the control credential and a ready backend,
+and returns `{"protocol":1,"cancellation":1}`. Existing protocol 1 acquire/check/release remain compatible.
+`POST /cci/source-control/{operation}/cancel` permanently records the UUID and releases its fence if held.
+It returns `{"protocol":1,"operation":"<uuid>","cancelled":true}`. Repeating it is safe, including when
+another operation now holds the fence: that other operation is not released. A never-acquired UUID can
+be cancelled so a delayed acquire cannot take effect later.
+
+CCI must serialize cancellation against creating its operation record and only cancel STARTING operations
+before external configuration writes. The deployment credential can cancel any UUID, so this precondition
+is enforced by the trusted CCI caller, not inferred from DevLake pipeline state.
+
+Cancellation UUIDs are retained in `_devlake_cci_source_control_cancellations` with no expiry. The row is
+persisted before releasing the singleton fence. If release fails, cancellation can be retried after restart;
+acquire remains rejected. Do not truncate either control metadata table during maintenance. Both are
+initialized after the existing database process lock. The CI image smoke checks cancellation across restart
+against actual MySQL; race tests cover cancellation versus a delayed acquisition.
+
+Control credentials require TLS on the CCI-to-DevLake route. This change does not deploy an image or alter
+GitOps. Publish the tested merge image, audit its exact SHA/digest, validate TLS routing and update CCI's
+explicit version gate before enabling the CCI runner.

@@ -94,7 +94,14 @@ def main():
         request("DELETE", "/cci/source-control/" + OPERATION, 204, control=True)
         request("GET", "/proceed-db-migration", 200)
         request("GET", "/proceed-db-migration", 409, owner=True)
-        print("Built image: source revision, persistent fence, restart and release verified.")
+        assert request("GET", "/cci/source-control/capabilities", 200, control=True) == {"protocol": 1, "cancellation": 1}
+        cancelled = request("POST", "/cci/source-control/" + OPERATION + "/cancel", 200, {}, control=True)
+        assert cancelled == {"protocol": 1, "operation": OPERATION, "cancelled": True}
+        subprocess.run(["docker", "restart", NAME], check=True, stdout=subprocess.DEVNULL)
+        ready()
+        request("POST", "/cci/source-control", 409, {"operation": OPERATION, "blueprints": []}, control=True)
+        request("POST", "/cci/source-control/" + OPERATION + "/cancel", 200, {}, control=True)
+        print("Built image: source revision, persistent fence, restart, release and durable cancellation verified.")
     finally:
         subprocess.run(["docker", "rm", "--force", NAME], check=False, stdout=subprocess.DEVNULL)
 
