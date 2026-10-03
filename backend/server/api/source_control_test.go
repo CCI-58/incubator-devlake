@@ -27,7 +27,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type apiControlStore struct{ state sourcecontrol.State }
+type apiControlStore struct {
+	state     sourcecontrol.State
+	cancelled map[string]bool
+}
+
+func (s *apiControlStore) Cancelled(op string) (bool, error) { return s.cancelled[op], nil }
+func (s *apiControlStore) Cancel(op string) error {
+	if s.cancelled == nil {
+		s.cancelled = map[string]bool{}
+	}
+	s.cancelled[op] = true
+	return nil
+}
 
 func (s *apiControlStore) Load() (sourcecontrol.State, error)   { return s.state, nil }
 func (s *apiControlStore) Save(state sourcecontrol.State) error { s.state = state; return nil }
@@ -80,4 +92,9 @@ func TestSourceControlRoutesAndMutationGuard(t *testing.T) {
 	request("DELETE", controlPath+"/"+operation, "", "Bearer api-key", key, "", 204)
 	request("PATCH", "/blueprints/1", "{}", "Bearer api-key", "", token, 409)
 	request("PATCH", "/blueprints/1", "{}", "Bearer api-key", "", "", 204)
+	request("GET", controlPath+"/capabilities", "", "Bearer api-key", key, "", 200)
+	request("POST", controlPath+"/"+operation+"/cancel", "{}", "Bearer api-key", "", "", 403)
+	request("POST", controlPath+"/"+operation+"/cancel", "{}", "Bearer api-key", key, "", 200)
+	request("POST", controlPath+"/"+operation+"/cancel", "{}", "Bearer api-key", key, "", 200)
+	request("POST", controlPath, payload, "Bearer api-key", key, "", 409)
 }
