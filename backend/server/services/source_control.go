@@ -40,7 +40,31 @@ const SourceControlTable = "_devlake_cci_source_control"
 
 func (sourceControlRow) TableName() string { return SourceControlTable }
 
+type sourceControlCancellation struct {
+	Operation string `gorm:"primaryKey;type:varchar(36);comment:Permanently cancelled CCI operation revision"`
+}
+
+func (sourceControlCancellation) TableName() string {
+	return "_devlake_cci_source_control_cancellations"
+}
+
 type sourceControlStore struct{ db dal.Dal }
+
+func (s sourceControlStore) Cancelled(operation string) (bool, error) {
+	var row sourceControlCancellation
+	err := s.db.First(&row, dal.Where("operation = ?", operation))
+	if s.db.IsErrorNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+func (s sourceControlStore) Cancel(operation string) error {
+	exists, err := s.Cancelled(operation)
+	if err != nil || exists {
+		return err
+	}
+	return s.db.Create(&sourceControlCancellation{Operation: operation})
+}
 
 func (s sourceControlStore) Load() (sourcecontrol.State, error) {
 	var row sourceControlRow
@@ -69,6 +93,7 @@ var sourceControl *sourcecontrol.Control
 
 func initSourceControl() {
 	errors.Must(db.AutoMigrate(&sourceControlRow{}))
+	errors.Must(db.AutoMigrate(&sourceControlCancellation{}))
 	var row sourceControlRow
 	err := db.First(&row, dal.Where("id = ?", 1))
 	if db.IsErrorNotFound(err) {

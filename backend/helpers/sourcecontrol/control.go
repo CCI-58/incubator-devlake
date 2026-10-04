@@ -45,6 +45,8 @@ type State struct {
 type Store interface {
 	Load() (State, error)
 	Save(State) error
+	Cancelled(string) (bool, error)
+	Cancel(string) error
 }
 
 type Control struct {
@@ -118,6 +120,13 @@ func (c *Control) Acquire(key, operation string, ids []uint64) (State, error) {
 	defer c.writes.Unlock()
 	c.pipelines.Lock()
 	defer c.pipelines.Unlock()
+	cancelled, err := c.store.Cancelled(operation)
+	if err != nil {
+		return State{}, ErrUnavailable
+	}
+	if cancelled {
+		return State{}, ErrHeld
+	}
 	previous, err := c.load()
 	if err != nil {
 		return State{}, ErrUnavailable
@@ -168,6 +177,36 @@ func (c *Control) Release(key, operation string) error {
 	state.Held = false
 	if c.store.Save(state) != nil {
 		return ErrUnavailable
+	}
+	return nil
+}
+
+// Cancel permanently rejects delayed acquisitions for this revision. Persist the
+// tombstone before releasing: a failed release can be retried without reacquiring.
+// Cancelling an unacquired revision must not release another operation's fence.
+func (c *Control) Cancel(key, operation string) error {
+	if !c.Authorized(key) {
+		return ErrUnavailable
+	}
+	if !operationPattern.MatchString(operation) {
+		return ErrInput
+	}
+	c.writes.Lock()
+	defer c.writes.Unlock()
+	c.pipelines.Lock()
+	defer c.pipelines.Unlock()
+	state, err := c.load()
+	if err != nil {
+		return ErrUnavailable
+	}
+	if err = c.store.Cancel(operation); err != nil {
+		return ErrUnavailable
+	}
+	if state.Operation == operation && state.Held {
+		state.Held = false
+		if c.store.Save(state) != nil {
+			return ErrUnavailable
+		}
 	}
 	return nil
 }

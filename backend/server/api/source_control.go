@@ -40,8 +40,34 @@ func sourceControlError(ctx *gin.Context, err error) {
 }
 
 func registerSourceControl(router *gin.Engine, control *sourcecontrol.Control, ready func() bool) {
-	// Endpoints remain behind the existing API authentication and additionally
-	// require a dedicated deployment credential unavailable to Config UI users.
+	// All control routes require the deployment credential. API authentication
+	// additionally applies when reached via the authenticated /rest group.
+	router.GET(controlPath+"/capabilities", func(ctx *gin.Context) {
+		if control == nil || !control.Authorized(ctx.GetHeader(controlKeyHeader)) {
+			ctx.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		if !ready() {
+			ctx.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{"protocol": 1, "cancellation": 1})
+	})
+	router.POST(controlPath+"/:operation/cancel", func(ctx *gin.Context) {
+		if control == nil || !control.Authorized(ctx.GetHeader(controlKeyHeader)) {
+			ctx.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		if !ready() {
+			ctx.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		if err := control.Cancel(ctx.GetHeader(controlKeyHeader), ctx.Param("operation")); err != nil {
+			sourceControlError(ctx, err)
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{"protocol": 1, "operation": ctx.Param("operation"), "cancelled": true})
+	})
 	router.POST(controlPath, func(ctx *gin.Context) {
 		if control == nil || !control.Authorized(ctx.GetHeader(controlKeyHeader)) {
 			ctx.AbortWithStatus(http.StatusForbidden)
