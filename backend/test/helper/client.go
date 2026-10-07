@@ -63,6 +63,8 @@ var (
 		models.LockingHistory{}.TableName(),
 		models.LockingStub{}.TableName(),
 		services.SourceControlTable,
+		services.SourceControlResolutionTable,
+		"_devlake_cci_source_control_cancellations",
 	}
 )
 

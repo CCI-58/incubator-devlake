@@ -155,6 +155,13 @@ func (c *Control) Check(key, operation string) (State, error) {
 	if !state.Held || state.Operation != operation {
 		return State{}, ErrHeld
 	}
+	cancelled, err := c.store.Cancelled(operation)
+	if err != nil {
+		return State{}, ErrUnavailable
+	}
+	if cancelled {
+		return State{}, ErrHeld
+	}
 	return state, nil
 }
 
@@ -167,6 +174,11 @@ func (c *Control) Release(key, operation string) error {
 	defer c.writes.Unlock()
 	c.pipelines.Lock()
 	defer c.pipelines.Unlock()
+	if _, found, err := c.resolution(operation); err != nil {
+		return ErrUnavailable
+	} else if found {
+		return ErrHeld
+	}
 	state, err := c.load()
 	if err != nil {
 		return ErrUnavailable
@@ -195,6 +207,11 @@ func (c *Control) Cancel(key, operation string) error {
 	defer c.writes.Unlock()
 	c.pipelines.Lock()
 	defer c.pipelines.Unlock()
+	if _, found, err := c.resolution(operation); err != nil {
+		return ErrUnavailable
+	} else if found {
+		return ErrHeld
+	}
 	state, err := c.load()
 	if err != nil {
 		return ErrUnavailable
@@ -221,6 +238,17 @@ func (c *Control) Write(token string) (func(), error) {
 	if (!state.Held && token != "") || (state.Held && (len(c.secret) < 32 || !hmac.Equal([]byte(token), []byte(Token(c.secret, state.Operation))))) {
 		c.writes.RUnlock()
 		return nil, ErrHeld
+	}
+	if state.Held {
+		cancelled, err := c.store.Cancelled(state.Operation)
+		if err != nil {
+			c.writes.RUnlock()
+			return nil, ErrUnavailable
+		}
+		if cancelled {
+			c.writes.RUnlock()
+			return nil, ErrHeld
+		}
 	}
 	return c.writes.RUnlock, nil
 }

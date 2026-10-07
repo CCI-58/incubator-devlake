@@ -76,7 +76,11 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Source-control tests
         working-directory: backend
-        run: go test -race ./helpers/sourcecontrol ./server/api -run 'Test(Persistent|Pipeline|Acquire|Invalid|Credentials|SourceControl|Cancel)'
+        env:
+          TEST_SOURCE_CONTROL_MYSQL_DSN: 'merico:ci-isolated-db@tcp(127.0.0.1:3306)/lake?parseTime=true'
+        run: |
+          go test -race ./helpers/sourcecontrol ./server/api -run 'Test(Persistent|Pipeline|Acquire|Invalid|Credentials|SourceControl|Cancel|Quiesce|Resolution)'
+          go test -race server/services/source_control_store.go server/services/source_control_resolution_test.go -run TestResolutionMysqlPersistence
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Build the complete backend with all native plugins

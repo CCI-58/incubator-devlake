@@ -28,6 +28,7 @@ import (
 )
 
 type apiControlStore struct {
+	journal   map[string]sourcecontrol.Resolution
 	state     sourcecontrol.State
 	cancelled map[string]bool
 }
@@ -97,4 +98,58 @@ func TestSourceControlRoutesAndMutationGuard(t *testing.T) {
 	request("POST", controlPath+"/"+operation+"/cancel", "{}", "Bearer api-key", key, "", 200)
 	request("POST", controlPath+"/"+operation+"/cancel", "{}", "Bearer api-key", key, "", 200)
 	request("POST", controlPath, payload, "Bearer api-key", key, "", 409)
+}
+
+func (s *apiControlStore) LoadResolution(op string) (sourcecontrol.Resolution, bool, error) {
+	r, ok := s.journal[op]
+	return r, ok, nil
+}
+func (s *apiControlStore) SaveResolution(r sourcecontrol.Resolution) error {
+	if s.journal == nil {
+		s.journal = map[string]sourcecontrol.Resolution{}
+	}
+	s.journal[r.Operation] = r
+	return nil
+}
+func TestResolutionRoutesAndSeparateWriteToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	key := strings.Repeat("s", 32)
+	op := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	proof := "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee"
+	control := sourcecontrol.New(&apiControlStore{}, key)
+	router := gin.New()
+	registerSourceControl(router, control, func() bool { return true })
+	router.Use(sourceControlWrites(control))
+	writes := 0
+	router.POST("/plugins/github/connections", func(ctx *gin.Context) { writes++; ctx.Status(201) })
+	request := func(method, path, body, controlKey, oldToken, recoveryToken string, want int) {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set(controlKeyHeader, controlKey)
+		req.Header.Set(operationHeader, oldToken)
+		req.Header.Set(resolutionHeader, recoveryToken)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != want {
+			t.Fatalf("%s %s status %d want %d", method, path, w.Code, want)
+		}
+	}
+	request("POST", controlPath+"/"+op+"/quiesce", `{"evidence":"`+proof+`","blueprints":[1]}`, "", "", "", 403)
+	request("POST", controlPath+"/"+op+"/quiesce", `{"evidence":"`+proof+`","blueprints":[1]}`, key, "", "", 200)
+	old := sourcecontrol.Token(key, op)
+	recovery := sourcecontrol.ResolutionToken(key, op, proof)
+	request("POST", "/plugins/github/connections", "{}", "", old, "", 409)
+	request("POST", "/plugins/github/connections", "{}", "", "", "", 409)
+	request("POST", "/plugins/github/connections", "{}", "", old, recovery, 400)
+	request("POST", "/plugins/github/connections", "{}", "", "", recovery, 201)
+	path := controlPath + "/" + op + "/resolutions/" + proof
+	request("GET", path, "", key, "", "", 200)
+	request("DELETE", controlPath+"/"+op, "", key, "", "", 409)
+	request("POST", controlPath+"/"+op+"/cancel", "{}", key, "", "", 409)
+	request("POST", path+"/release", "{}", key, "", "", 200)
+	request("POST", path+"/release", "{}", key, "", "", 200)
+	request("POST", "/plugins/github/connections", "{}", "", "", recovery, 409)
+	if writes != 1 {
+		t.Fatalf("unexpected writes: %d", writes)
+	}
 }
