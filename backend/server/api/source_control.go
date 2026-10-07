@@ -27,6 +27,7 @@ import (
 const controlPath = "/cci/source-control"
 const controlKeyHeader = "X-CCI-Control-Key"
 const operationHeader = "X-CCI-Source-Token"
+const resolutionHeader = "X-CCI-Resolution-Token"
 
 func sourceControlError(ctx *gin.Context, err error) {
 	status := http.StatusConflict
@@ -51,7 +52,11 @@ func registerSourceControl(router *gin.Engine, control *sourcecontrol.Control, r
 			ctx.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}
-		ctx.JSON(http.StatusOK, gin.H{"protocol": 1, "cancellation": 1})
+		quiescence := 0
+		if control.SupportsQuiescence() {
+			quiescence = 1
+		}
+		ctx.JSON(http.StatusOK, gin.H{"protocol": 1, "cancellation": 1, "quiescence": quiescence})
 	})
 	router.POST(controlPath+"/:operation/cancel", func(ctx *gin.Context) {
 		if control == nil || !control.Authorized(ctx.GetHeader(controlKeyHeader)) {
@@ -68,6 +73,7 @@ func registerSourceControl(router *gin.Engine, control *sourcecontrol.Control, r
 		}
 		ctx.JSON(http.StatusOK, gin.H{"protocol": 1, "operation": ctx.Param("operation"), "cancelled": true})
 	})
+	registerSourceResolution(router, control, ready)
 	router.POST(controlPath, func(ctx *gin.Context) {
 		if control == nil || !control.Authorized(ctx.GetHeader(controlKeyHeader)) {
 			ctx.AbortWithStatus(http.StatusForbidden)
@@ -132,7 +138,17 @@ func sourceControlWrites(control *sourcecontrol.Control) gin.HandlerFunc {
 			ctx.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}
-		release, err := control.Write(ctx.GetHeader(operationHeader))
+		var release func()
+		var err error
+		if ctx.GetHeader(resolutionHeader) != "" {
+			if ctx.GetHeader(operationHeader) != "" {
+				ctx.AbortWithStatus(http.StatusBadRequest)
+				return
+			}
+			release, err = control.ResolutionWrite(ctx.GetHeader(resolutionHeader))
+		} else {
+			release, err = control.Write(ctx.GetHeader(operationHeader))
+		}
 		if err != nil {
 			sourceControlError(ctx, err)
 			return

@@ -170,3 +170,97 @@ against actual MySQL; race tests cover cancellation versus a delayed acquisition
 Control credentials require TLS on the CCI-to-DevLake route. This change does not deploy an image or alter
 GitOps. Publish the tested merge image, audit its exact SHA/digest, validate TLS routing and update CCI's
 explicit version gate before enabling the CCI runner.
+
+## HTTP quiescence and resolution receipts (capability `quiescence: 1`)
+
+This extension supplies an HTTP admission barrier for C59-1016. It is **not** a
+certificate that external connection data has been reconciled, a database commit
+has settled, or a running collection pipeline has stopped. Do not release the
+CCI operation reservation based on this receipt alone.
+
+The authenticated capabilities response advertises `quiescence: 1` only when the
+store implements the durable resolution journal. Stock images and older builds
+must be rejected by clients. Pin the approved full `/version` value as well as
+checking the capability; never derive the expected version from the remote reply.
+
+| Request | Result |
+| --- | --- |
+| `POST /cci/source-control/<operation>/quiesce` with `{"evidence":"<UUID>","blueprints":[1,2]}` | Drain admitted mutating HTTP handlers, revoke old admission, hold the protected fence and persist QUIESCED |
+| `GET /cci/source-control/<operation>/resolutions/<evidence>` | Read the matching receipt without acquiring or releasing anything |
+| `POST /cci/source-control/<operation>/resolutions/<evidence>/release` | After caller-side reconciliation, drain cleanup handlers, persist release intent, release only this fence, persist RELEASED |
+
+All endpoints require the existing deployment control key. They return
+`protocol: 1`, `quiescence: 1`, `operation`, `evidence`, canonical `blueprints`, and
+`phase` (QUIESCED, RELEASING, RELEASED). Operation/evidence/protected set are
+immutable for a journal entry. Reusing an operation with another proof is rejected.
+
+The quiescence handler takes the exclusive write lock, which waits for all
+already admitted mutating handlers. It persists the existing cancellation
+tombstone before saving a fence/receipt. Delayed acquisitions and old source
+tokens are permanently rejected, including after restart and after a failed
+fence save. A failure before the receipt exists requires another quiescence
+attempt; it is never reported as a completed barrier. A different active owner
+is never displaced. Recovering an unheld fence creates **new** cleanup ownership
+and does not attest to continuity of the original operation.
+
+Cleanup uses `X-CCI-Resolution-Token`:
+`hex(HMAC-SHA256(controlKey, "cci-source-resolution-v1:" + operation + ":" + evidence))`.
+It is separate from the old source token. Requests supplying both tokens are
+rejected. The cleanup token works only while that journal is QUIESCED and its
+fence is held; ordinary writes and protected pipeline admissions remain blocked.
+Normal release/cancel endpoints cannot bypass an existing journal. This token
+permits mutating handlers; the CCI reconciliation adapter must still restrict
+which operations it performs and must not blindly resend a historical create.
+Existing authentication behavior on direct/internal versus `/rest` routes is
+unchanged.
+
+RELEASING is persisted before clearing the held flag. If the final receipt save
+fails, a retry can finish the historical receipt even after a different operation
+has acquired the singleton; it never clears the new owner's fence. RELEASED
+receipts and cancellation tombstones are retained after later operations and
+restart. The new journal is bootstrapped with the existing runtime control tables,
+without clearing existing control rows; data-reset test helpers preserve it.
+
+### Remaining integration requirements
+
+- Verify the current external identity/ownership and CCI save state for both
+  REQUESTED and APPLIED. The CCI ledger's APPLIED-lost-fence exit is still pending.
+- Resolve uncertain database writes before considering a snapshot stable. A
+  returned HTTP handler can have observed a database transport error without
+  proving that an already accepted SQL statement cannot commit later. This
+  barrier also does not drain existing asynchronous collection work. Database
+  transaction evidence or a separately verified maintenance procedure is needed
+  for those cases; a timeout or missing list entry is not such evidence.
+- Enforce actor/project authorization and associate the receipt with the pinned
+  target and immutable operation input. Verify cleanup and CCI consistency before
+  calling release. A UUID entered in a UI is not proof of reconciliation.
+- Integrate the CCI resolver/UI, then run the real CCI/image/database acceptance
+  scenarios before enabling the feature. This implementation performs no rollout.
+
+### Verification
+
+Race-enabled helper/API tests exercise handler draining, revoked old tokens,
+restart, proof mismatch, other-owner rejection, cleanup draining, and failure at
+fence/journal/release-intent/final-receipt persistence. An isolated MySQL test uses
+the production store to verify durable receipts and cancellation, immutable
+proofs, and release retries after a subsequent owner. CCI and Go share a fixed
+HMAC protocol vector. CI runs these before the existing complete image build.
+The MySQL store test is compiled with its production source file to avoid the
+unrelated services tests' generated-mock prerequisite. Full image startup and
+CCI-to-image integration are separate checks; they have not run locally here.
+
+### Review follow-up: isolate store tests from image smoke
+
+The MySQL store test now uses `lake_sourcecontrol_test`, created explicitly by
+CI with a grant for the fixture user. It checks `SELECT DATABASE()` and refuses
+any other database before changing tables. The image smoke continues to use
+`lake`; test tombstones and held singleton rows must never seed that database.
+The store test was rerun on isolated MySQL, and the `lake` schema remained empty.
+A deliberate `lake` DSN was also rejected before creating any table.
+
+The image smoke now expects the quiescence capability and exercises
+`acquire → quiesce → receipt GET → restart → cleanup-token write → release`.
+It verifies old-token rejection, normal-release/cancel rejection, and the
+historical release receipt after a new owner acquires the fence and the image
+restarts again. These additions are wired into the existing complete-image CI
+job; the updated full-image smoke has not been run locally.
