@@ -29,15 +29,22 @@ NAME = "cci-devlake-image-smoke"
 BASE = "http://127.0.0.1:18080"
 KEY = "ci-only-source-control-secret-32-bytes"
 OPERATION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+QUIESCE_OPERATION = "11111111-bbbb-cccc-dddd-eeeeeeeeeeee"
+EVIDENCE = "22222222-bbbb-cccc-dddd-eeeeeeeeeeee"
+NEXT_OPERATION = "33333333-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
-def request(method, path, expected, body=None, owner=False, control=False):
+def request(method, path, expected, body=None, owner=False, control=False, resolution=False, operation=OPERATION):
     headers = {"Content-Type": "application/json"}
     if control:
         headers["X-CCI-Control-Key"] = KEY
     if owner:
         headers["X-CCI-Source-Token"] = hmac.new(
-            KEY.encode(), ("cci-source-control-v1:" + OPERATION).encode(), hashlib.sha256
+            KEY.encode(), ("cci-source-control-v1:" + operation).encode(), hashlib.sha256
+        ).hexdigest()
+    if resolution:
+        headers["X-CCI-Resolution-Token"] = hmac.new(
+            KEY.encode(), ("cci-source-resolution-v1:" + QUIESCE_OPERATION + ":" + EVIDENCE).encode(), hashlib.sha256
         ).hexdigest()
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
@@ -69,6 +76,51 @@ def verify_held():
     request("GET", "/proceed-db-migration", 200, owner=True)
 
 
+def resolution_receipt(phase):
+    return {"protocol": 1, "quiescence": 1, "operation": QUIESCE_OPERATION,
+            "evidence": EVIDENCE, "blueprints": [], "phase": phase}
+
+
+def verify_quiesced():
+    path = "/cci/source-control/" + QUIESCE_OPERATION
+    state = request("GET", path + "/resolutions/" + EVIDENCE, 200, control=True)
+    assert state == resolution_receipt("QUIESCED"), state
+    request("GET", path, 409, control=True)
+    request("GET", "/proceed-db-migration", 409)
+    request("GET", "/proceed-db-migration", 409, owner=True, operation=QUIESCE_OPERATION)
+    request("GET", "/proceed-db-migration", 400, owner=True, resolution=True, operation=QUIESCE_OPERATION)
+    request("GET", "/proceed-db-migration", 200, resolution=True)
+    request("DELETE", path, 409, control=True)
+    request("POST", path + "/cancel", 409, {}, control=True)
+
+
+def verify_resolution_lifecycle():
+    path = "/cci/source-control/" + QUIESCE_OPERATION
+    receipt_path = path + "/resolutions/" + EVIDENCE
+    request("POST", "/cci/source-control", 200, {"operation": QUIESCE_OPERATION, "blueprints": []}, control=True)
+    request("POST", path + "/quiesce", 403, {"evidence": EVIDENCE, "blueprints": []})
+    state = request("POST", path + "/quiesce", 200, {"evidence": EVIDENCE, "blueprints": []}, control=True)
+    assert state == resolution_receipt("QUIESCED"), state
+    verify_quiesced()
+    subprocess.run(["docker", "restart", NAME], check=True, stdout=subprocess.DEVNULL)
+    ready()
+    verify_quiesced()
+    request("POST", receipt_path + "/release", 403, {})
+    released = request("POST", receipt_path + "/release", 200, {}, control=True)
+    assert released == resolution_receipt("RELEASED"), released
+    request("GET", "/proceed-db-migration", 409, resolution=True)
+    request("GET", "/proceed-db-migration", 200)
+    request("POST", "/cci/source-control", 409, {"operation": QUIESCE_OPERATION, "blueprints": []}, control=True)
+    request("POST", "/cci/source-control", 200, {"operation": NEXT_OPERATION, "blueprints": []}, control=True)
+    subprocess.run(["docker", "restart", NAME], check=True, stdout=subprocess.DEVNULL)
+    ready()
+    assert request("GET", receipt_path, 200, control=True) == resolution_receipt("RELEASED")
+    assert request("POST", receipt_path + "/release", 200, {}, control=True) == resolution_receipt("RELEASED")
+    state = request("GET", "/cci/source-control/" + NEXT_OPERATION, 200, control=True)
+    assert state == {"protocol": 1, "operation": NEXT_OPERATION, "blueprints": [], "held": True}, state
+    request("DELETE", "/cci/source-control/" + NEXT_OPERATION, 204, control=True)
+
+
 def main():
     image = os.environ["TEST_IMAGE"]
     revision = os.environ["TEST_REVISION"]
@@ -94,14 +146,15 @@ def main():
         request("DELETE", "/cci/source-control/" + OPERATION, 204, control=True)
         request("GET", "/proceed-db-migration", 200)
         request("GET", "/proceed-db-migration", 409, owner=True)
-        assert request("GET", "/cci/source-control/capabilities", 200, control=True) == {"protocol": 1, "cancellation": 1}
+        assert request("GET", "/cci/source-control/capabilities", 200, control=True) == {"protocol": 1, "cancellation": 1, "quiescence": 1}
         cancelled = request("POST", "/cci/source-control/" + OPERATION + "/cancel", 200, {}, control=True)
         assert cancelled == {"protocol": 1, "operation": OPERATION, "cancelled": True}
         subprocess.run(["docker", "restart", NAME], check=True, stdout=subprocess.DEVNULL)
         ready()
         request("POST", "/cci/source-control", 409, {"operation": OPERATION, "blueprints": []}, control=True)
         request("POST", "/cci/source-control/" + OPERATION + "/cancel", 200, {}, control=True)
-        print("Built image: source revision, persistent fence, restart, release and durable cancellation verified.")
+        verify_resolution_lifecycle()
+        print("Built image: source revision, fence, cancellation, quiescence, cleanup token, restart and release receipts verified.")
     finally:
         subprocess.run(["docker", "rm", "--force", NAME], check=False, stdout=subprocess.DEVNULL)
 

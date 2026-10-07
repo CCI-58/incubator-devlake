@@ -41,6 +41,13 @@ func TestResolutionMysqlPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer raw.Close()
+	var database string
+	if err = db.Raw("SELECT DATABASE()").Scan(&database).Error; err != nil {
+		t.Fatal(err)
+	}
+	if database != "lake_sourcecontrol_test" {
+		t.Fatal("refusing to modify a database other than lake_sourcecontrol_test")
+	}
 	for _, model := range []interface{}{&sourceControlResolution{}, &sourceControlCancellation{}, &sourceControlRow{}} {
 		if err = db.Migrator().DropTable(model); err != nil {
 			t.Fatal(err)

@@ -248,3 +248,19 @@ HMAC protocol vector. CI runs these before the existing complete image build.
 The MySQL store test is compiled with its production source file to avoid the
 unrelated services tests' generated-mock prerequisite. Full image startup and
 CCI-to-image integration are separate checks; they have not run locally here.
+
+### Review follow-up: isolate store tests from image smoke
+
+The MySQL store test now uses `lake_sourcecontrol_test`, created explicitly by
+CI with a grant for the fixture user. It checks `SELECT DATABASE()` and refuses
+any other database before changing tables. The image smoke continues to use
+`lake`; test tombstones and held singleton rows must never seed that database.
+The store test was rerun on isolated MySQL, and the `lake` schema remained empty.
+A deliberate `lake` DSN was also rejected before creating any table.
+
+The image smoke now expects the quiescence capability and exercises
+`acquire → quiesce → receipt GET → restart → cleanup-token write → release`.
+It verifies old-token rejection, normal-release/cancel rejection, and the
+historical release receipt after a new owner acquires the fence and the image
+restarts again. These additions are wired into the existing complete-image CI
+job; the updated full-image smoke has not been run locally.

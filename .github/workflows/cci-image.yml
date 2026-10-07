@@ -74,10 +74,14 @@ jobs:
         with:
           go-version: '1.24.13'
           cache-dependency-path: backend/go.sum
+      - name: Prepare isolated source-control test database
+        run: |
+          docker exec -e MYSQL_PWD=ci-isolated-root "${{ job.services.mysql.id }}" \
+            mysql -uroot -e "CREATE DATABASE IF NOT EXISTS lake_sourcecontrol_test; GRANT ALL ON lake_sourcecontrol_test.* TO 'merico'@'%';"
       - name: Source-control tests
         working-directory: backend
         env:
-          TEST_SOURCE_CONTROL_MYSQL_DSN: 'merico:ci-isolated-db@tcp(127.0.0.1:3306)/lake?parseTime=true'
+          TEST_SOURCE_CONTROL_MYSQL_DSN: 'merico:ci-isolated-db@tcp(127.0.0.1:3306)/lake_sourcecontrol_test?parseTime=true'
         run: |
           go test -race ./helpers/sourcecontrol ./server/api -run 'Test(Persistent|Pipeline|Acquire|Invalid|Credentials|SourceControl|Cancel|Quiesce|Resolution)'
           go test -race server/services/source_control_store.go server/services/source_control_resolution_test.go -run TestResolutionMysqlPersistence
