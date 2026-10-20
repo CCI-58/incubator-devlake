@@ -18,45 +18,60 @@ limitations under the License.
 package api
 
 import (
-	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 )
 
-func TestRunPprofServer(t *testing.T) {
-	t.Run("disabled by default", func(t *testing.T) {
-		_ = os.Unsetenv("ENABLE_PPROF")
-		runPprofServer()
-		// give any (incorrectly) started goroutine a moment to bind
-		time.Sleep(50 * time.Millisecond)
-		if conn, err := net.Dial("tcp", pprofDebugAddr); err == nil {
-			_ = conn.Close()
-			t.Fatalf("pprof server should not be listening when ENABLE_PPROF is unset")
-		}
-	})
-
-	t.Run("enabled listens on loopback only", func(t *testing.T) {
-		t.Setenv("ENABLE_PPROF", "true")
-		runPprofServer()
-
-		var resp *http.Response
-		var err error
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			resp, err = http.Get("http://" + pprofDebugAddr + "/debug/pprof/")
-			if err == nil {
-				break
+func TestPprofEnabled(t *testing.T) {
+	tests := []struct {
+		name  string
+		unset bool
+		value string
+		want  bool
+	}{
+		{name: "unset", unset: true, want: false},
+		{name: "empty string", value: "", want: false},
+		{name: "false", value: "false", want: false},
+		{name: "not a bool", value: "abc", want: false},
+		{name: "true", value: "true", want: true},
+		{name: "1 (ParseBool true form)", value: "1", want: true},
+		{name: "TRUE (ParseBool is case-insensitive)", value: "TRUE", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.unset {
+				_ = os.Unsetenv("ENABLE_PPROF")
+			} else {
+				t.Setenv("ENABLE_PPROF", tt.value)
 			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		if err != nil {
-			t.Fatalf("expected pprof server to be reachable on %s, got: %v", pprofDebugAddr, err)
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("expected 200 from /debug/pprof/, got %d", resp.StatusCode)
-		}
-	})
+			if got := pprofEnabled(); got != tt.want {
+				t.Fatalf("pprofEnabled() = %v, want %v (ENABLE_PPROF=%q unset=%v)", got, tt.want, tt.value, tt.unset)
+			}
+		})
+	}
+}
+
+func TestNewPprofMux(t *testing.T) {
+	// httptest.NewServer binds an ephemeral port and tears it down via
+	// defer srv.Close(), so this never touches the real pprofDebugAddr and
+	// is safe under -count=2 or a parallel test run.
+	srv := httptest.NewServer(newPprofMux())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/debug/pprof/")
+	if err != nil {
+		t.Fatalf("GET /debug/pprof/ failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from /debug/pprof/, got %d", resp.StatusCode)
+	}
+}
+
+func TestPprofDebugAddrIsLoopbackOnly(t *testing.T) {
+	if pprofDebugAddr != "127.0.0.1:6060" {
+		t.Fatalf("pprofDebugAddr changed to %q; it must stay loopback-only (127.0.0.1), never \"0.0.0.0\" or a bare \":PORT\"", pprofDebugAddr)
+	}
 }
