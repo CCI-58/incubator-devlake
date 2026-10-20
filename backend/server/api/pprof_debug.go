@@ -36,30 +36,45 @@ import (
 // repo) and C59-1192 for the rationale.
 const pprofDebugAddr = "127.0.0.1:6060"
 
-// runPprofServer starts the net/http/pprof debug endpoints on pprofDebugAddr,
-// independent of the main API port/router. It is called as early as possible
-// in CreateAndRunApiServer (before Init()/InitExecuteMigration()) so that a
-// hang during plugin initialization or the DB migration check can still be
-// inspected live via pprof, instead of only via a destructive SIGQUIT dump.
-//
-// Disabled by default; opt in with ENABLE_PPROF=true (parsed the same way as
-// ENABLE_STACKTRACE in core/errors/crdb_impl.go).
-func runPprofServer() {
+// pprofEnabled reports whether the pprof debug server should start, parsed
+// the same way as ENABLE_STACKTRACE in core/errors/crdb_impl.go: unset or
+// not a valid bool means disabled. Note this only reads the *process*
+// environment (os.LookupEnv) like ENABLE_STACKTRACE does -- setting it in a
+// .env file that only viper reads has no effect; it must be a real
+// environment variable (e.g. a Kubernetes `env:` entry).
+func pprofEnabled() bool {
 	enable, exists := os.LookupEnv("ENABLE_PPROF")
 	if !exists {
-		return
+		return false
 	}
-	if on, _ := strconv.ParseBool(enable); !on {
-		return
-	}
+	on, _ := strconv.ParseBool(enable)
+	return on
+}
 
+// newPprofMux builds the standard net/http/pprof handlers on their own
+// ServeMux, independent of the main gin router/DefaultServeMux.
+func newPprofMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return mux
+}
 
+// runPprofServer starts the pprof debug endpoints on pprofDebugAddr,
+// independent of the main API port/router. It is called as early as possible
+// in CreateAndRunApiServer (before Init()/InitExecuteMigration()) so that a
+// hang during plugin initialization or the DB migration check can still be
+// inspected live via pprof, instead of only via a destructive SIGQUIT dump.
+//
+// Disabled by default; opt in with ENABLE_PPROF=true (see pprofEnabled).
+func runPprofServer() {
+	if !pprofEnabled() {
+		return
+	}
+	mux := newPprofMux()
 	go func() {
 		logruslog.Global.Printf("pprof debug server listening on %s (loopback-only, not reachable from outside the pod)", pprofDebugAddr)
 		if err := http.ListenAndServe(pprofDebugAddr, mux); err != nil {
