@@ -69,6 +69,11 @@ func InjectCustomService(pipelineNotifier services.PipelineNotificationService, 
 // @host localhost:8080
 // @BasePath /
 func CreateAndRunApiServer() {
+	// Start the loopback-only pprof debug server (disabled unless
+	// ENABLE_PPROF=true) as early as possible, so a hang during Init()/
+	// InitExecuteMigration() can still be inspected live. See pprof_debug.go
+	// and C59-1192.
+	runPprofServer()
 	// Setup and run the server
 	Init()
 	services.InitExecuteMigration()
