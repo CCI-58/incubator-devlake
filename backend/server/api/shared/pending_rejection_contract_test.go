@@ -44,7 +44,16 @@ func TestPendingRejectionContract(t *testing.T) {
 			return true
 		}
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
+			// The pre-creation refusal returns (nil, error); later validation assigns err.
+			result, ok := n.(*ast.ReturnStmt)
+			if !ok || len(result.Results) != 2 {
+				return true
+			}
+			first, ok := result.Results[0].(*ast.Ident)
+			if !ok || first.Name != "nil" {
+				return true
+			}
+			call, ok := result.Results[1].(*ast.CallExpr)
 			if !ok || len(call.Args) != 1 {
 				return true
 			}
