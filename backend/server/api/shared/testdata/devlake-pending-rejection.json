@@ -1,0 +1,1 @@
+{"code":0,"success":false,"message":"error triggering blueprint (400)","causes":["there are pending pipelines of current blueprint already (400)"],"data":null}
