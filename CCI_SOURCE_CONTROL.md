@@ -289,3 +289,5 @@ legacy trigger when this capability is unavailable. CCI must pin the endpoint,
 retain its bounded retry budget, and reconcile its own job/publication records
 before releasing its reservation. Old images do not implement this protocol;
 image publication, CCI integration and deployment acceptance remain separate.
+
+Receipt creation uses an ordinary InnoDB transaction, without MySQL `LOCK TABLES`/`UNLOCK TABLES` (which implicitly commit). CI injects a failing receipt INSERT after pipeline/task INSERTs and checks that neither survives. Legacy creation retains its existing locking.

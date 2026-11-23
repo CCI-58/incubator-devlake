@@ -121,6 +121,31 @@ def verify_resolution_lifecycle():
     request("DELETE", "/cci/source-control/" + NEXT_OPERATION, 204, control=True)
 
 
+def isolated_mysql(sql):
+    # This script owns the CI-only lake database and uses only fixed test credentials.
+    return subprocess.check_output(["docker", "run", "--rm", "--network", "host",
+        "--env", "MYSQL_PWD=ci-isolated-db", "mysql:8.0.36", "mysql", "-h127.0.0.1",
+        "-umerico", "-Dlake", "-N", "-B", "-e", sql], text=True).strip()
+
+
+def verify_receipt_rollback():
+    bp=request("POST","/blueprints",201,{"name":"cci-receipt-rollback","enable":True,"mode":"ADVANCED",
+        "cronConfig":"0 0 1 1 *","plan":[[{"plugin":"gitextract","subtasks":["extractRepoMeta"],
+        "options":{"url":"/nonexistent-ci-repository"}}]]})
+    counts="SELECT (SELECT count(*) FROM _devlake_pipelines),(SELECT count(*) FROM _devlake_tasks)"
+    before=isolated_mysql(counts)
+    isolated_mysql("CREATE TRIGGER cci_receipt_fault BEFORE INSERT ON _devlake_cci_collection_receipts FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='isolated receipt fault'")
+    path="/cci/collection-requests/66666666-bbbb-cccc-dddd-eeeeeeeeeeee"
+    try:
+        request("POST",path+"/start",503,{"blueprintId":bp["id"]},control=True)
+    finally:
+        isolated_mysql("DROP TRIGGER cci_receipt_fault")
+    assert isolated_mysql(counts)==before, "receipt failure leaked a pipeline/task transaction"
+    retired=request("POST",path+"/resolve",200,{"blueprintId":bp["id"]},control=True)
+    assert retired["state"]=="RETIRED"
+    assert request("POST",path+"/start",200,{"blueprintId":bp["id"]},control=True)==retired
+
+
 def verify_collection_receipts():
     capability = "/cci/collection-requests/capabilities"
     request("GET", capability, 403)
@@ -190,6 +215,7 @@ def main():
         request("POST", "/cci/source-control/" + OPERATION + "/cancel", 200, {}, control=True)
         verify_resolution_lifecycle()
         verify_collection_receipts()
+        verify_receipt_rollback()
         print("Built image: source revision, fence, cancellation, quiescence, cleanup token, restart and release receipts verified.")
     finally:
         subprocess.run(["docker", "rm", "--force", NAME], check=False, stdout=subprocess.DEVNULL)

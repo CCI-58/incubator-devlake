@@ -49,18 +49,40 @@ func createDbPipelineWithReceipt(newPipeline *models.NewPipeline, receipt func(d
 	createDbPipelineLock.Lock()
 	defer createDbPipelineLock.Unlock()
 	pipeline = &models.Pipeline{}
-	txHelper := dbhelper.NewTxHelper(basicRes, &err)
-	defer txHelper.End()
-	tx := txHelper.Begin()
+	var tx dal.Transaction
+	var txHelper *dbhelper.TxHelper[errors.Error]
+	if receipt == nil {
+		txHelper = dbhelper.NewTxHelper(basicRes, &err)
+		defer txHelper.End()
+		tx = txHelper.Begin()
+	} else {
+		// MySQL LOCK/UNLOCK TABLES implicitly commits. Receipt creation MUST use
+		// an ordinary InnoDB transaction. The existing process lock still serializes
+		// blueprint admission; a conflicting UUID rolls back all pipeline/task rows.
+		tx = db.Begin()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if failure, ok := recovered.(error); ok {
+					err = errors.Convert(failure)
+				} else {
+					err = errors.Default.New("collection creation failed")
+				}
+			}
+			if err != nil {
+				_ = tx.Rollback()
+			} else {
+				err = tx.Commit()
+			}
+		}()
+	}
 	tables := dal.LockTables{
 		{Table: "_devlake_pipelines", Exclusive: true},
 		{Table: "_devlake_pipeline_labels", Exclusive: true},
 		{Table: "_devlake_tasks", Exclusive: true},
 	}
-	if receipt != nil {
-		tables = append(tables, &dal.LockTable{Table: "_devlake_cci_collection_receipts", Exclusive: true})
+	if receipt == nil {
+		errors.Must(txHelper.LockTablesTimeout(2*time.Second, tables))
 	}
-	errors.Must(txHelper.LockTablesTimeout(2*time.Second, tables))
 	if err != nil {
 		err = errors.BadInput.Wrap(err, "failed to lock pipeline table, is there any pending pipeline or deletion?")
 		return
