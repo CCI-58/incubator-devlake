@@ -251,6 +251,8 @@ func GetPipelineLogsArchivePath(pipeline *models.Pipeline) (string, errors.Error
 }
 
 func dequeuePipeline(runningParallelLabels []string) (pipeline *models.Pipeline, err errors.Error) {
+	collectionDequeueLock.Lock()
+	defer collectionDequeueLock.Unlock()
 	txHelper := dbhelper.NewTxHelper(basicRes, &err)
 	defer txHelper.End()
 	tx := txHelper.Begin()
@@ -483,6 +485,14 @@ func getPipelineLogsPath(pipeline *models.Pipeline) (string, errors.Error) {
 
 // RerunPipeline would rerun all failed tasks or specified task
 func RerunPipeline(pipelineId uint64, task *models.Task) (tasks []*models.Task, err errors.Error) {
+	// A terminal receipt is immutable evidence. Retrying it requires a new CCI request.
+	count, lookupErr := db.Count(dal.From(&collectionReceiptRow{}), dal.Where("pipeline = ?", pipelineId))
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+	if count != 0 {
+		return nil, errors.HttpStatus(409).New("receipt pipeline requires a new collection request")
+	}
 	existing, err := GetDbPipeline(pipelineId)
 	if err != nil {
 		return nil, err

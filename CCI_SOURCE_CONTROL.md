@@ -291,3 +291,5 @@ before releasing its reservation. Old images do not implement this protocol;
 image publication, CCI integration and deployment acceptance remain separate.
 
 Receipt creation uses an ordinary InnoDB transaction, without MySQL `LOCK TABLES`/`UNLOCK TABLES` (which implicitly commit). CI injects a failing receipt INSERT after pipeline/task INSERTs and checks that neither survives. Legacy creation retains its existing locking.
+
+Receipt-owned queued cancellation serializes with dequeue through commit, checks that no task/subtask started, and atomically records terminal task/pipeline timestamps. The cancel response is still not the end certificate: callers resolve again. Legacy rerun rejects receipt-owned pipelines so a verified terminal receipt cannot be revived. The image smoke disables queue consumption to deterministically verify queued cancellation and restart durability; it is not a live tool-collection acceptance test.

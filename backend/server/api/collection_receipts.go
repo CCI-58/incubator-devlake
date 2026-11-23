@@ -64,7 +64,7 @@ func registerCollectionReceipts(router *gin.Engine, control *sourcecontrol.Contr
 			return
 		}
 		if action == "cancel" && receipt.Pipeline > 0 && !receipt.Ended {
-			if services.CancelPipeline(receipt.Pipeline) != nil {
+			if services.CancelReceiptPipeline(receipt.Pipeline) != nil {
 				ctx.AbortWithStatus(http.StatusServiceUnavailable)
 				return
 			}

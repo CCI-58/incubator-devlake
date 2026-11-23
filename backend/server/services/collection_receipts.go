@@ -23,6 +23,7 @@ import (
 	"github.com/apache/incubator-devlake/core/models"
 	"regexp"
 	"sync"
+	"time"
 )
 
 // Like source-control this relies on DevLake's one backend process per database.
@@ -152,4 +153,50 @@ func observeCollectionReceipt(row collectionReceiptRow) (CollectionReceipt, erro
 		}
 	}
 	return result, nil
+}
+
+// Covers the dequeue decision through its commit. A queued receipt cancellation
+// may certify termination only when no task/subtask has ever started.
+var collectionDequeueLock sync.Mutex
+
+func CancelReceiptPipeline(id uint64) (err errors.Error) {
+	collectionDequeueLock.Lock()
+	defer collectionDequeueLock.Unlock()
+	pipeline, err := GetDbPipeline(id)
+	if err != nil {
+		return err
+	}
+	if pipeline.Status != models.TASK_CREATED || pipeline.BeganAt != nil {
+		return CancelPipeline(id)
+	}
+	tx := db.Begin()
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		} else {
+			err = tx.Commit()
+		}
+	}()
+	var total, started, subtasks int64
+	total, err = tx.Count(dal.From(&models.Task{}), dal.Where("pipeline_id=?", id))
+	if err != nil {
+		return err
+	}
+	started, err = tx.Count(dal.From(&models.Task{}), dal.Where("pipeline_id=? AND (status<>? OR began_at IS NOT NULL OR finished_at IS NOT NULL)", id, models.TASK_CREATED))
+	if err != nil {
+		return err
+	}
+	subtasks, err = tx.Count(dal.From(&models.Subtask{}), dal.Join("JOIN _devlake_tasks t ON t.id=_devlake_subtasks.task_id"), dal.Where("t.pipeline_id=?", id))
+	if err != nil {
+		return err
+	}
+	if total <= 0 || total != int64(pipeline.TotalTasks) || started != 0 || subtasks != 0 {
+		return errors.HttpStatus(503).New("queued collection termination unconfirmed")
+	}
+	now := time.Now()
+	err = tx.UpdateColumns(&models.Task{}, []dal.DalSet{{ColumnName: "status", Value: models.TASK_CANCELLED}, {ColumnName: "finished_at", Value: now}}, dal.Where("pipeline_id=?", id))
+	if err != nil {
+		return err
+	}
+	return tx.UpdateColumns(&models.Pipeline{}, []dal.DalSet{{ColumnName: "status", Value: models.TASK_CANCELLED}, {ColumnName: "finished_at", Value: now}}, dal.Where("id=?", id))
 }

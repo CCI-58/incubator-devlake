@@ -179,6 +179,13 @@ def verify_collection_receipts():
     assert request("POST",bound_path+"/resolve",200,body,control=True)["pipelineId"]==first["pipelineId"]
     pipelines=request("GET",f"/pipelines?blueprint_id={bp_id}&page=1&pagesize=100",200)
     assert pipelines["count"]==1
+    acknowledged=request("POST",bound_path+"/cancel",200,body,control=True)
+    assert not acknowledged["ended"], "cancel acknowledgement must not certify termination"
+    ended=request("POST",bound_path+"/resolve",200,body,control=True)
+    assert ended["ended"] and not ended["succeeded"] and ended["pipelineId"]==first["pipelineId"]
+    subprocess.run(["docker","restart",NAME],check=True,stdout=subprocess.DEVNULL)
+    ready()
+    assert request("POST",bound_path+"/resolve",200,body,control=True)==ended
 
 
 def main():
@@ -188,6 +195,7 @@ def main():
         "docker", "run", "--detach", "--name", NAME, "--network", "host",
         "--env", "DB_URL=mysql://merico:ci-isolated-db@127.0.0.1:3306/lake?charset=utf8mb4&parseTime=True&loc=UTC",
         "--env", "PORT=18080", "--env", "MODE=release",
+        "--env", "CONSUME_PIPELINES=false",
         "--env", "FORCE_MIGRATION=true", "--env", "DISABLED_REMOTE_PLUGINS=true",
         "--env", "ENCRYPTION_SECRET=0123456789abcdef0123456789abcdef",
         "--env", "CCI_SOURCE_CONTROL_KEY=" + KEY, image,
