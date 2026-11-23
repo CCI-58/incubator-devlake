@@ -132,27 +132,30 @@ def verify_receipt_rollback():
     bp=request("POST","/blueprints",201,{"name":"cci-receipt-rollback","enable":True,"mode":"ADVANCED",
         "cronConfig":"0 0 1 1 *","plan":[[{"plugin":"gitextract","subtasks":["extractRepoMeta"],
         "options":{"url":"/nonexistent-ci-repository"}}]]})
+    instance=request("GET","/cci/collection-requests/capabilities",200,control=True)["instance"]
     counts="SELECT (SELECT count(*) FROM _devlake_pipelines),(SELECT count(*) FROM _devlake_tasks)"
     before=isolated_mysql(counts)
     isolated_mysql("CREATE TRIGGER cci_receipt_fault BEFORE INSERT ON _devlake_cci_collection_receipts FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='isolated receipt fault'")
     path="/cci/collection-requests/66666666-bbbb-cccc-dddd-eeeeeeeeeeee"
     try:
-        request("POST",path+"/start",503,{"blueprintId":bp["id"]},control=True)
+        request("POST",path+"/start",503,{"blueprintId":bp["id"],"instance":instance},control=True)
     finally:
         isolated_mysql("DROP TRIGGER cci_receipt_fault")
     assert isolated_mysql(counts)==before, "receipt failure leaked a pipeline/task transaction"
-    retired=request("POST",path+"/resolve",200,{"blueprintId":bp["id"]},control=True)
+    retired=request("POST",path+"/resolve",200,{"blueprintId":bp["id"],"instance":instance},control=True)
     assert retired["state"]=="RETIRED"
-    assert request("POST",path+"/start",200,{"blueprintId":bp["id"]},control=True)==retired
+    assert request("POST",path+"/start",200,{"blueprintId":bp["id"],"instance":instance},control=True)==retired
 
 
 def verify_collection_receipts():
     capability = "/cci/collection-requests/capabilities"
     request("GET", capability, 403)
-    assert request("GET", capability, 200, control=True) == {"protocol":1,"receipts":1}
+    assert request("GET", capability, 200, control=True)["receipts"]==1
     retired = "44444444-bbbb-cccc-dddd-eeeeeeeeeeee"
     path = "/cci/collection-requests/" + retired
-    body = {"blueprintId":987654321}
+    instance=request("GET",capability,200,control=True)["instance"]
+    body = {"blueprintId":987654321,"instance":instance}
+    request("POST",path+"/resolve",503,{"blueprintId":987654321,"instance":"ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee"},control=True)
     state = request("POST",path+"/resolve",200,body,control=True)
     assert state["state"] == "RETIRED" and state["pipelineId"] == 0
     request("POST",path+"/start",403,body)
@@ -160,14 +163,14 @@ def verify_collection_receipts():
     subprocess.run(["docker","restart",NAME],check=True,stdout=subprocess.DEVNULL)
     ready()
     assert request("POST",path+"/start",200,body,control=True)==state
-    request("POST",path+"/start",503,{"blueprintId":987654322},control=True)
+    request("POST",path+"/start",503,{"blueprintId":987654322,"instance":instance},control=True)
     # A real pipeline and receipt commit together; ignore the first reply and resolve by UUID.
     bp=request("POST","/blueprints",201,{"name":"cci-receipt-smoke","enable":True,"mode":"ADVANCED",
         "cronConfig":"0 0 1 1 *","plan":[[{"plugin":"gitextract","subtasks":["extractRepoMeta"],
         "options":{"url":"/nonexistent-ci-repository"}}]]})
     bp_id=bp["id"]
     bound_path="/cci/collection-requests/55555555-bbbb-cccc-dddd-eeeeeeeeeeee"
-    body={"blueprintId":bp_id}
+    body={"blueprintId":bp_id,"instance":instance}
     first=request("POST",bound_path+"/start",200,body,control=True)
     assert first["state"]=="BOUND" and first["pipelineId"]>0
     resolved=request("POST",bound_path+"/resolve",200,body,control=True)

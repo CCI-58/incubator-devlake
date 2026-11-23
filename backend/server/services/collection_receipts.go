@@ -21,6 +21,7 @@ import (
 	"github.com/apache/incubator-devlake/core/dal"
 	"github.com/apache/incubator-devlake/core/errors"
 	"github.com/apache/incubator-devlake/core/models"
+	"github.com/google/uuid"
 	"regexp"
 	"sync"
 	"time"
@@ -39,7 +40,35 @@ type collectionReceiptRow struct {
 
 func (collectionReceiptRow) TableName() string { return "_devlake_cci_collection_receipts" }
 
+type collectionInstance struct {
+	ID       uint64 `gorm:"primaryKey"`
+	Instance string `gorm:"type:varchar(36);not null"`
+}
+
+func (collectionInstance) TableName() string { return "_devlake_cci_collection_instance" }
+func initCollectionInstance() {
+	errors.Must(db.AutoMigrate(&collectionInstance{}))
+	var row collectionInstance
+	err := db.First(&row, dal.Where("id = ?", 1))
+	if db.IsErrorNotFound(err) {
+		errors.Must(db.Create(&collectionInstance{ID: 1, Instance: uuid.NewString()}))
+	} else {
+		errors.Must(err)
+	}
+}
+func CollectionInstanceID() (string, errors.Error) {
+	var row collectionInstance
+	if err := db.First(&row, dal.Where("id = ?", 1)); err != nil {
+		return "", err
+	}
+	if !receiptIDPattern.MatchString(row.Instance) {
+		return "", errors.HttpStatus(503).New("collection instance unavailable")
+	}
+	return row.Instance, nil
+}
+
 type CollectionReceipt struct {
+	Instance  string `json:"instance"`
 	Protocol  int    `json:"protocol"`
 	Request   string `json:"request"`
 	Blueprint uint64 `json:"blueprintId"`
@@ -51,8 +80,15 @@ type CollectionReceipt struct {
 
 // resolve=true never starts work: a missing request becomes permanently RETIRED.
 // Late or duplicate POSTs can never create a second pipeline for this identity.
-func ResolveOrStartCollection(request string, blueprint uint64, resolve bool) (CollectionReceipt, errors.Error) {
+func ResolveOrStartCollection(request string, blueprint uint64, resolve bool, instance string) (CollectionReceipt, errors.Error) {
 	var empty CollectionReceipt
+	actual, identityErr := CollectionInstanceID()
+	if identityErr != nil {
+		return empty, identityErr
+	}
+	if instance != actual {
+		return empty, errors.HttpStatus(409).New("collection instance mismatch")
+	}
 	if !receiptIDPattern.MatchString(request) || blueprint == 0 {
 		return empty, errors.BadInput.New("invalid collection identity")
 	}
@@ -101,6 +137,11 @@ func receiptView(row collectionReceiptRow) CollectionReceipt {
 // A cancel acknowledgement or a pipeline status alone is not an end certificate.
 func observeCollectionReceipt(row collectionReceiptRow) (CollectionReceipt, errors.Error) {
 	result := receiptView(row)
+	instance, identityErr := CollectionInstanceID()
+	if identityErr != nil {
+		return result, identityErr
+	}
+	result.Instance = instance
 	if row.Pipeline == 0 {
 		return result, nil
 	}

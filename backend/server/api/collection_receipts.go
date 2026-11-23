@@ -34,7 +34,12 @@ func registerCollectionReceipts(router *gin.Engine, control *sourcecontrol.Contr
 			ctx.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}
-		ctx.JSON(http.StatusOK, gin.H{"protocol": 1, "receipts": 1})
+		instance, err := services.CollectionInstanceID()
+		if err != nil {
+			ctx.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		ctx.JSON(http.StatusOK, gin.H{"protocol": 1, "receipts": 1, "instance": instance})
 	})
 	router.POST("/cci/collection-requests/:request/:action", func(ctx *gin.Context) {
 		if control == nil || !control.Authorized(ctx.GetHeader(controlKeyHeader)) {
@@ -52,13 +57,14 @@ func registerCollectionReceipts(router *gin.Engine, control *sourcecontrol.Contr
 		}
 		var body struct {
 			Blueprint uint64 `json:"blueprintId"`
+			Instance  string `json:"instance"`
 		}
 		ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, 1024)
 		if ctx.ShouldBindJSON(&body) != nil {
 			ctx.AbortWithStatus(http.StatusBadRequest)
 			return
 		}
-		receipt, err := services.ResolveOrStartCollection(ctx.Param("request"), body.Blueprint, action != "start")
+		receipt, err := services.ResolveOrStartCollection(ctx.Param("request"), body.Blueprint, action != "start", body.Instance)
 		if err != nil {
 			ctx.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "collection request unconfirmed"})
 			return
