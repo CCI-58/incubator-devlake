@@ -310,6 +310,10 @@ func reloadBlueprint(blueprint *models.Blueprint) errors.Error {
 }
 
 func createPipelineByBlueprint(blueprint *models.Blueprint, syncPolicy *models.SyncPolicy) (*models.Pipeline, errors.Error) {
+	return createPipelineByBlueprintWithReceipt(blueprint, syncPolicy, nil)
+}
+
+func createPipelineByBlueprintWithReceipt(blueprint *models.Blueprint, syncPolicy *models.SyncPolicy, receipt func(dal.Dal, uint64) errors.Error) (*models.Pipeline, errors.Error) {
 	release, admissionErr := sourcePipeline(blueprint.ID)
 	if admissionErr != nil {
 		return nil, admissionErr
@@ -367,7 +371,7 @@ func createPipelineByBlueprint(blueprint *models.Blueprint, syncPolicy *models.S
 	// if !shouldCreatePipeline {
 	// 	return nil, ErrEmptyPlan
 	// }
-	pipeline, err := createDbPipelineWithoutFence(&newPipeline)
+	pipeline, err := createDbPipelineWithReceipt(&newPipeline, receipt)
 	// Return all created tasks to the User
 	if err != nil {
 		blueprintLog.Error(err, fmt.Sprintf("%s on blueprint:[%d][%s]", failToCreateCronJob, blueprint.ID, blueprint.Name))

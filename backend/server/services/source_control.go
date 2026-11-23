@@ -28,6 +28,7 @@ var sourceControl *sourcecontrol.Control
 
 func initSourceControl() {
 	errors.Must(db.AutoMigrate(&sourceControlRow{}))
+	errors.Must(db.AutoMigrate(&collectionReceiptRow{}))
 	errors.Must(db.AutoMigrate(&sourceControlCancellation{}))
 	errors.Must(db.AutoMigrate(&sourceControlResolution{}))
 	var row sourceControlRow

@@ -42,19 +42,25 @@ func CreateDbPipeline(newPipeline *models.NewPipeline) (pipeline *models.Pipelin
 
 // Caller must hold pipeline admission from before constructing the plan.
 func createDbPipelineWithoutFence(newPipeline *models.NewPipeline) (pipeline *models.Pipeline, err errors.Error) {
+	return createDbPipelineWithReceipt(newPipeline, nil)
+}
+
+func createDbPipelineWithReceipt(newPipeline *models.NewPipeline, receipt func(dal.Dal, uint64) errors.Error) (pipeline *models.Pipeline, err errors.Error) {
 	createDbPipelineLock.Lock()
 	defer createDbPipelineLock.Unlock()
 	pipeline = &models.Pipeline{}
 	txHelper := dbhelper.NewTxHelper(basicRes, &err)
 	defer txHelper.End()
 	tx := txHelper.Begin()
-	errors.Must(txHelper.LockTablesTimeout(2*time.Second,
-		dal.LockTables{
-			{Table: "_devlake_pipelines", Exclusive: true},
-			{Table: "_devlake_pipeline_labels", Exclusive: true},
-			{Table: "_devlake_tasks", Exclusive: true},
-		},
-	))
+	tables := dal.LockTables{
+		{Table: "_devlake_pipelines", Exclusive: true},
+		{Table: "_devlake_pipeline_labels", Exclusive: true},
+		{Table: "_devlake_tasks", Exclusive: true},
+	}
+	if receipt != nil {
+		tables = append(tables, &dal.LockTable{Table: "_devlake_cci_collection_receipts", Exclusive: true})
+	}
+	errors.Must(txHelper.LockTablesTimeout(2*time.Second, tables))
 	if err != nil {
 		err = errors.BadInput.Wrap(err, "failed to lock pipeline table, is there any pending pipeline or deletion?")
 		return
@@ -121,6 +127,10 @@ func createDbPipelineWithoutFence(newPipeline *models.NewPipeline) (pipeline *mo
 	// update tasks state
 	errors.Must(tx.Update(dbPipeline))
 	dbPipeline.Labels = newPipeline.Labels
+	// The receipt and pipeline/tasks either all commit or all roll back.
+	if receipt != nil {
+		errors.Must(receipt(tx, dbPipeline.ID))
+	}
 
 	// Notify that the pipeline has been created
 	go func(pipelineId uint64) {

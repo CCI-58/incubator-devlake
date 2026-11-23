@@ -126,6 +126,7 @@ func SetupApiServer(router *gin.Engine) {
 
 	registerSourceControl(router, services.SourceControl(), func() bool { return services.CurrentStatus() == services.SERVICE_STATUS_READY })
 	router.Use(sourceControlWrites(services.SourceControl()))
+	registerCollectionReceipts(router, services.SourceControl(), func() bool { return services.CurrentStatus() == services.SERVICE_STATUS_READY })
 
 	// Endpoint to proceed database migration
 	router.GET("/proceed-db-migration", func(ctx *gin.Context) {

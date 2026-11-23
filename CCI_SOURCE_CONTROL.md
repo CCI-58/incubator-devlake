@@ -264,3 +264,28 @@ It verifies old-token rejection, normal-release/cancel rejection, and the
 historical release receipt after a new owner acquires the fence and the image
 restarts again. These additions are wired into the existing complete-image CI
 job; the updated full-image smoke has not been run locally.
+
+## Native collection receipts (collection protocol 1)
+
+The authenticated `/cci/collection-requests/capabilities` endpoint advertises
+`{"protocol":1,"receipts":1}`. This is separate from source-control ownership.
+`POST /cci/collection-requests/<UUID>/{start,resolve,cancel}` accepts an immutable
+`{"blueprintId":<positive ID>}` and always requires `X-CCI-Control-Key`.
+`start` performs FULL collection through the normal blueprint validation and
+pending checks. Pipeline, tasks, and request receipt commit in one transaction.
+Repeating a UUID never creates another pipeline, even after its first one ends.
+`resolve` never starts work. It returns the committed pipeline or persists a
+permanent RETIRED tombstone, so a delayed start cannot create work afterwards.
+Only requests originally sent through this protocol may be resolved this way;
+absence is never proof about a historical uncorrelated `/blueprints/.../trigger`.
+The existing source-control HTTP fence also protects these mutations.
+
+BOUND responses include `ended`/`succeeded`. End proof requires matching FULL
+pipeline identity and terminal pipeline/tasks/subtasks; elapsed time and a
+successful cancellation response are not proof. `cancel` targets only the bound
+pipeline and retains its receipt. Unconfirmed or incomplete termination keeps
+`ended=false`. Never delete a receipt, reset the table, or silently fall back to
+legacy trigger when this capability is unavailable. CCI must pin the endpoint,
+retain its bounded retry budget, and reconcile its own job/publication records
+before releasing its reservation. Old images do not implement this protocol;
+image publication, CCI integration and deployment acceptance remain separate.
