@@ -1,8 +1,25 @@
-# 収集時間の短縮とSonarQube接続境界の修正計画
+<!--
+Licensed to the Apache Software Foundation (ASF) under one or more
+contributor license agreements. See the NOTICE file distributed with
+this work for additional information regarding copyright ownership.
+The ASF licenses this file to You under the Apache License, Version 2.0
+(the "License"); you may not use this file except in compliance with
+the License. You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+# 収集時間の短縮とSonarQube・GitHub接続境界の修正計画
 
 ## レビュー対象
 
-stagingの収集が長時間待機する原因を調査した結果、直列実行に加え、SonarQubeのSQL結合条件不足による処理行増幅を確認した。まずこの不具合を独立した実装PRで修正する。承認前に製品コード、DB、稼働設定は変更しない。
+stagingの収集が長時間待機する原因を調査した結果、直列実行に加え、SonarQubeのSQL結合条件不足による処理行増幅を確認した。追加調査でGitHubにも同種の欠落を確認したため、両プラグインの接続境界の不具合を1つの独立した実装PRで修正する。承認前に製品コード、DB、稼働設定は変更しない。
 
 本計画は「すべての遅延要因を一括変更する」ものではない。並列数変更は[GitOps #298](https://github.com/CCI-58/GitOps/pull/298)、収集ライフサイクル・receiptは[DevLake #9](https://github.com/CCI-58/incubator-devlake/pull/9)の別スコープとする。これらへの依存を増やさず、性能修正を個別にレビュー・配備できる形にする。
 
@@ -35,23 +52,29 @@ WHERE icb.connection_id = ? AND project_key = ?
 
 `i.connection_id = icb.connection_id` がないため、他接続の同一課題にも結合する。不要な変換・書き込みが増える。また、自接続に対応課題がなく他接続だけに存在する場合の誤った取り込みも回帰テストで防ぐ。重複した中間行から最終行が重複保存されるか、表示値が変わるかは未確認であり、実測なしに数値誤りを断定しない。
 
-GitHubの [PR commit変換](../../backend/plugins/github/tasks/pr_commit_convertor.go)、[Workflow変換](../../backend/plugins/github/tasks/cicd_run_convertor.go) は対象repo/connectionを条件として保存済みデータを読む。[ApiExtractor](../../backend/helpers/pluginhelper/api/api_extractor.go) もparamsに一致するraw行を走査する。API取得が差分でも抽出・変換まで差分とは限らない。これらの条件を単純に「今回更新分のみ」へ変更すると、再計算・遅延更新・設定変更の反映を欠くため、今回の修正には含めない。
+GitHubの [PR commit変換](../../backend/plugins/github/tasks/pr_commit_convertor.go) はPR側だけをrepo/connectionで絞り、子のPR commit側には接続条件がない。この点は初稿の説明を訂正する。2026-11-24 14:15頃JSTに、repo_id=1057710129、PR側connection_id=10でread-only COUNTを実施し、現行結合76,004行、`prc.connection_id = pr.connection_id` を追加した結合14,075行（約5.40倍）を確認した。履歴75,758件とは観測時点が異なる。
+
+[Workflow変換](../../backend/plugins/github/tasks/cicd_run_convertor.go) は対象repo/connectionを条件として保存済みデータを読む。[ApiExtractor](../../backend/helpers/pluginhelper/api/api_extractor.go) もparamsに一致するraw行を走査する。API取得が差分でも抽出・変換まで差分とは限らない。これらの条件を単純に「今回更新分のみ」へ変更すると、再計算・遅延更新・設定変更の反映を欠くため、今回の修正には含めない。
 
 ## 実装する変更
 
 1. SonarQubeの結合を `i.issue_key = icb.issue_key AND i.connection_id = icb.connection_id` にする。
-2. project条件を `i.project_key = ?` と修飾し、code blockとissueの両方が同じ接続・対象projectに属することを明確にする。
+2. project条件を `i.project_key = ?` と修飾する。code blockにはproject_key列がなく、現行もissue側を指すため、修飾自体は可読性の改善で動作変更ではない。WHEREのproject条件によりLEFT JOINは実質INNER JOINとなる。対応課題が全くない行は引き続き変換しない。他接続だけに対応課題がある行も修正後は除外する。
 3. 同じscope全体を再変換する既存動作、domain ID生成、保存方式は維持する。公開API・UI・スキーマ・認証情報・接続設定は変更しない。
-4. 関連するSonarQubeコンバーターとGitHub PR commitの結合条件も読み取りで点検する。同種の欠落があれば具体的な再現と影響を記録し、実装範囲をレビューで明示してから取り込む。無関係な高速化は同梱しない。
+4. GitHubの `pr_commit` / `pr_issue` / `pr_label` / `pr_comment` / `pr_review` / `review` / `issue_comment` / `issue_label` の各 `*_convertor.go`（8箇所）も今回の同じ実装PRに含める。親のgithub_idだけでなく親子のconnection_id一致をJOIN条件に追加し、子側の別接続行の混入を防ぐ。それぞれ同一キー・異なる接続の再現を作り、入力件数と出力内容を検証する。SonarQubeのissue_impactsは既に接続条件があり変更不要。その他の箇所や全量再変換最適化は今回に追加せず別計画とする。
 
 ## CIでの回帰検証
 
-実際のコンバーターとDBのJOIN結果を通すテストを追加する。SQL文字列だけを照合するテストで済ませない。既存のテスト基盤・CI対象を実装時に確認し、必要なら当該テストを実行するCI経路を追加する。
+実際のコンバーターとDBのJOIN結果を通すテストを追加する。SQL文字列だけを照合するテストで済ませない。既存の `.github/workflows/test-e2e.yml` はGo変更PRで `make e2e-test-go-plugins` をMySQL/PostgreSQL双方で実行する。この経路を使い、新しいCI経路は追加しない。
+
+既存 `sonarqube/e2e/issue_test.go` の2接続はキーもprojectも異なり再現に足りないため、同じissue_key/project_keyを異なる接続に持つCSV fixtureを追加する。GitHubも8箇所それぞれに同一親キー・異なる接続の子行を用意する。
+
+入力件数は、各コンバーターが実際に使うcursor clausesをエクスポートされた小さな関数に切り出し、e2eから同じclausesを使う `db.Count(clauses...)` で検証する。テスト側に別のJOINを複製しない。既存e2ehelperの最終テーブル比較と併用し、upsertによって隠される重複入力も検出する。SELECT付きclausesのCOUNTは両DBで確認する。
 
 - 単一接続の正常ケースは修正前と同じ出力。
 - 2接続が同じissue_key/project_keyを持っても、対象接続の各code blockが1度ずつ変換される。最終upsertが重複を隠すため、最終件数だけでなく変換入力件数も検証する。
 - 他接続だけに一致課題がある場合は取り込まれない。
-- 同接続の別project、複数code block、対応課題なしを含め、対象範囲と正しい全件変換を維持する。
+- 同接続の別projectは除外、複数code blockは各1回、対応課題なしは変換されないことを維持する。GitHubの8箇所も同接続・対象repoの子行だけが各1回入力され、他接続の内容が出力に混入しないことを確認する。
 - 再実行してもdomain ID・最終件数・内容が安定する。
 - 既存SonarQubeテストをCIで実施。ローカルでCIの検証一式を重複実行しない。
 
@@ -59,8 +82,8 @@ GitHubの [PR commit変換](../../backend/plugins/github/tasks/pr_commit_convert
 
 1. 実装レビュー・CI成功後、承認されたforkイメージを作成しGitOpsで配備する。実行中の収集へのPod更新の影響を確認する。並列数2への変更とは別にSHA/digestを記録する。
 2. testで2接続に同じ課題があるケースを確認し、その後stagingで既存の接続・projectを使って確認する。収集の開始や設定操作はCCIの通常UIからPlaywrightで行い、DB/APIで接続設定や収集状態を書き換えない。UIが順番待ちなら迂回起動しない。
-3. 同じconnection/projectについて、修正後JOINの期待件数、実際の変換件数、所要時間、CPU・メモリ・再試行を記録する。並列数・データ増加・他処理負荷の条件も記録し、単純な前後時間差を全て本修正の効果としない。
-4. 対応するSonarQube指標をUIで確認する。性能改善だけで指標表示全体の受入完了とはしない。stagingの既存受入project 18801/19551についても収集状態と取得元の対応を確認し、未接続の指標を成功扱いにしない。
+3. 同じconnection/project（GitHubはrepo）について、修正後JOINの期待件数、実際の変換件数、所要時間、CPU・メモリ・再試行を記録する。修正前後のread-only `EXPLAIN` で使用インデックス・推定行数も保存する。SonarQubeの複合主キー `(connection_id, issue_key)` に対するアクセス改善は実行計画で確認し、行数減少と区別して記録する。並列数・データ増加・他処理負荷の条件も記録し、単純な前後時間差を全て本修正の効果としない。
+4. 修正対象のSonarQube/GitHubについて通常UIからの収集完了と関連する表示の回帰を確認する。既存受入project 18801/19551の全指標の数値表示・ライフサイクル受入は別タスクとし、本修正の完了条件には含めない。
 5. 異なる接続との結合による増幅がなくなり、期待入力件数・出力が一致、単一接続の回帰なし、通常UIで再収集できることを完了条件とする。「17分が必ず約3分になる」とは約束しない。
 
 変更にDBマイグレーションは不要。異常時はGitOpsで直前イメージへ戻す。既存データは削除せず、過去に誤ったdomain行が作られたかは別途確認する。コード修正だけで既存の不要行が消えるとは扱わない。もしデータ補正が必要なら対象と復旧方法を別途レビューする。
