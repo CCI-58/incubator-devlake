@@ -19,7 +19,7 @@ limitations under the License.
 
 ## レビュー対象
 
-stagingの収集が長時間待機する原因を調査した結果、直列実行に加え、SonarQubeのSQL結合条件不足による処理行増幅を確認した。追加調査でGitHubとJenkinsにも同種の欠落を確認したため、3プラグインの接続境界の不具合（計10箇所）を1つの独立した実装PRで修正する。承認前に製品コード、DB、稼働設定は変更しない。
+stagingの収集が長時間待機する原因を調査した結果、直列実行に加え、SonarQubeのSQL結合条件不足による処理行増幅を確認した。追加調査でGitHubとJenkinsにも同種の欠落を確認したため、3プラグインの接続境界の不具合（計11箇所）を1つの独立した実装PRで修正する。承認前に製品コード、DB、稼働設定は変更しない。
 
 本計画は「すべての遅延要因を一括変更する」ものではない。並列数変更は[GitOps #298](https://github.com/CCI-58/GitOps/pull/298)、収集ライフサイクル・receiptは[DevLake #9](https://github.com/CCI-58/incubator-devlake/pull/9)の別スコープとする。これらへの依存を増やさず、性能修正を個別にレビュー・配備できる形にする。
 
@@ -61,20 +61,20 @@ GitHubの [PR commit変換](../../backend/plugins/github/tasks/pr_commit_convert
 1. SonarQubeの結合を `i.issue_key = icb.issue_key AND i.connection_id = icb.connection_id` にする。
 2. project条件を `i.project_key = ?` と修飾する。code blockにはproject_key列がなく、現行もissue側を指すため、修飾自体は可読性の改善で動作変更ではない。WHEREのproject条件によりLEFT JOINは実質INNER JOINとなる。対応課題が全くない行は引き続き変換しない。他接続だけに対応課題がある行も修正後は除外する。
 3. 同じscope全体を再変換する既存動作、domain ID生成、保存方式は維持する。公開API・UI・スキーマ・認証情報・接続設定は変更しない。
-4. GitHubの `pr_commit` / `pr_issue` / `pr_label` / `pr_comment` / `pr_review` / `review` / `issue_comment` / `issue_label` の各 `*_convertor.go`（8箇所）も今回の同じ実装PRに含める。親のgithub_idだけでなく親子のconnection_id一致をJOIN条件に追加し、子側の別接続行の混入を防ぐ。それぞれ同一キー・異なる接続の再現を作り、入力件数と出力内容を検証する。SonarQubeのissue_impactsは既に接続条件があり変更不要。その他の箇所や全量再変換最適化は今回に追加せず別計画とする。
+4. GitHubの `pr_commit` / `pr_issue` / `pr_label` / `pr_comment` / `pr_review` / `review` / `issue_comment` / `issue_label` の各 `*_convertor.go`および `milestone_converter.go`（計9箇所）も今回の同じ実装PRに含める。親のgithub_idだけでなく親子のconnection_id一致をJOIN条件に追加し、子側の別接続行の混入を防ぐ。それぞれ同一キー・異なる接続の再現を作り、入力件数と出力内容を検証する。SonarQubeのissue_impactsは既に接続条件があり変更不要。その他の箇所や全量再変換最適化は今回に追加せず別計画とする。
 
 ## CIでの回帰検証
 
 実際のコンバーターとDBのJOIN結果を通すテストを追加する。SQL文字列だけを照合するテストで済ませない。既存の `.github/workflows/test-e2e.yml` はGo変更PRで `make e2e-test-go-plugins` をMySQL/PostgreSQL双方で実行する。この経路を使い、新しいCI経路は追加しない。
 
-既存 `sonarqube/e2e/issue_test.go` の2接続はキーもprojectも異なり再現に足りないため、同じissue_key/project_keyを異なる接続に持つCSV fixtureを追加する。GitHubも8箇所それぞれに同一親キー・異なる接続の子行を用意する。
+既存 `sonarqube/e2e/issue_test.go` の2接続はキーもprojectも異なり再現に足りないため、同じissue_key/project_keyを異なる接続に持つCSV fixtureを追加する。GitHubも9箇所それぞれに同一親キー・異なる接続の子行を用意する。
 
-入力件数は、各コンバーターが実際に使うcursor clausesをエクスポートされた小さな関数に切り出し、e2eから同じclausesを使う `db.Count(clauses...)` で検証する。テスト側に別のJOINを複製しない。既存e2ehelperの最終テーブル比較と併用し、upsertによって隠される重複入力も検出する。SELECT付きclausesのCOUNTは両DBで確認する。
+入力件数は、各コンバーターが実際に使うFROM/JOIN/WHEREのclausesを、SELECTを含まないエクスポートされた小さな関数に切り出し、e2eから同じclausesを使う `db.Count(clauses...)` で検証する。テスト側に別のJOINを複製しない。既存e2ehelperの最終テーブル比較と併用し、upsertによって隠される重複入力も検出する。cursor側でのみSelectや必要なOrderbyを後から追加し、COUNT側には渡さない。これによりGORMによるCOUNT(icb.*)等への変換を避け、両DBで件数の一致を確認する。
 
 - 単一接続の正常ケースは修正前と同じ出力。
 - 2接続が同じissue_key/project_keyを持っても、対象接続の各code blockが1度ずつ変換される。最終upsertが重複を隠すため、最終件数だけでなく変換入力件数も検証する。
 - 他接続だけに一致課題がある場合は取り込まれない。
-- 同接続の別projectは除外、複数code blockは各1回、対応課題なしは変換されないことを維持する。GitHubの8箇所も同接続・対象repoの子行だけが各1回入力され、他接続の内容が出力に混入しないことを確認する。
+- 同接続の別projectは除外、複数code blockは各1回、対応課題なしは変換されないことを維持する。GitHubの9箇所も同接続・対象repoの子行だけが各1回入力され、他接続の内容が出力に混入しないことを確認する。
 - 再実行してもdomain ID・最終件数・内容が安定する。
 - 既存SonarQubeテストをCIで実施。ローカルでCIの検証一式を重複実行しない。
 
@@ -105,10 +105,17 @@ GitHubの [PR commit変換](../../backend/plugins/github/tasks/pr_commit_convert
 | GitLab | MR commit/note/reviewer/label、issue labelのJOINには接続一致条件あり | この種類の不足は未発見、製品変更しない |
 | Jenkins | `stage_convertor.go:74` はbuild_nameだけで結合し、build側のみconnectionで絞る。Stage/Build双方のキーにはconnection_idを含む。同名buildを異なる接続に持つ場合に他接続stageが混入し得る | 同種の接続境界修正として今回の実装PRに1箇所追加 |
 | SonarQube | code blocksに欠落、issue impactsには接続一致条件あり | 前述の1箇所修正 |
-| GitHub | 前述の8コンバーターで子側の接続条件が欠落 | 前述の8箇所修正 |
+| GitHub | 前述の9コンバーターで子側の接続条件が欠落 | 前述の9箇所修正 |
 
 Jenkinsは `tjs.connection_id = tjb.connection_id` をJOINに追加する。通常jobとmulti-branch双方について、同じbuild名・stage IDを2接続に持つfixtureで対象接続だけの入力件数・出力を確認する。他接続だけにstageがあるケース、対応buildなしの除外も検証し、既存の単一接続動作を維持する。
 
 stagingのread-only COUNTでは、Jenkins stages=0行、builds=3行、異接続JOIN行=0行だった。従ってコード上の条件欠落は確認できるが、現在のstaging遅延の原因としてJenkinsを挙げる根拠はない。実データ再現済みのSonarQube/GitHubと区別する。
 
-今回の実装範囲は以上の計10箇所（SonarQube 1 / GitHub 8 / Jenkins 1）と対応回帰テスト。Jira/GitLabの予防的な書換えや、結合条件以外の改善は追加しない。UI受入・配備記録には対象3ツールを含め、Jenkinsに実機stageデータがない場合は合成fixtureのCI検証と実機未検証を明確に分ける。
+今回の実装範囲は以上の計11箇所（SonarQube 1 / GitHub 9 / Jenkins 1）と対応回帰テスト。Jira/GitLabの予防的な書換えや、結合条件以外の改善は追加しない。UI受入・配備記録には対象3ツールを含め、Jenkinsに実機stageデータがない場合は合成fixtureのCI検証と実機未検証を明確に分ける。
+
+
+## 再レビューで確認したGitHub milestoneの追加範囲
+
+`milestone_converter.go:69` は `gm.milestone_id = gi.milestone_id` のみでJOINし、WHEREはmilestone側のrepo/connectionだけを絞っている。issue側にも `gi.connection_id = gm.connection_id` を要求する修正を、今回のGitHub9箇所に含める。
+
+2026-11-24 18:16頃JST、stagingのrepo_id=1057710129、gm.connection_id=10でread-only COUNTを実施した結果、現行JOIN=0件、接続条件追加後=0件だった。この対象では行増幅を実測できておらず、PR commitの実測とは区別する。コード上の欠落は確認済みで、同じmilestone_id・issue IDを異なる接続に持つfixtureにより、対象接続のissueだけが各1回入力され、sprint_issues等の出力へ他接続のissueが混入しないことをMySQL/PostgreSQLのe2eで検証する。他接続だけにissueがある場合、単一接続、再実行時の安定性も確認する。
