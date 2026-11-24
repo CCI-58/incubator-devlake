@@ -94,3 +94,21 @@ GitHubの [PR commit変換](../../backend/plugins/github/tasks/pr_commit_convert
 - 接続間の重複収集: 接続ごとに認証権限・取得範囲が違う可能性がある。repo名/project_keyの一致だけで統合しない。
 - GraphQL再試行: EOF/502の発生区間と呼出サイズ・サーバー/プロキシ側状況を確認する。再試行を削ったりデータを省略して成功扱いにしない。
 - GitOps #298: 同時実行数2は待機緩和策。testの並列負荷観測後、staging/releaseへ別途反映する。上記の行増幅や全量再変換を解消する修正ではない。
+
+## 他ツールの横断確認（レビュー後の追加調査）
+
+同じ配備revisionのJira/GitLab/Jenkins/SonarQube `tasks` 内の明示的SQL JOINと関連モデルの複合キー、WHERE条件を確認した。これは接続境界の結合条件の点検であり、ツール全体の無欠陥・性能・API認証の保証ではない。
+
+| ツール | 接続をまたぐJOINの点検結果 | 今回の扱い |
+| --- | --- | --- |
+| Jira | issue/board、changelog、comment、label、relationship、worklog、sprint、commit、collector等の確認したJOINには接続一致条件あり | この種類の不足は未発見、製品変更しない |
+| GitLab | MR commit/note/reviewer/label、issue labelのJOINには接続一致条件あり | この種類の不足は未発見、製品変更しない |
+| Jenkins | `stage_convertor.go:74` はbuild_nameだけで結合し、build側のみconnectionで絞る。Stage/Build双方のキーにはconnection_idを含む。同名buildを異なる接続に持つ場合に他接続stageが混入し得る | 同種の接続境界修正として今回の実装PRに1箇所追加 |
+| SonarQube | code blocksに欠落、issue impactsには接続一致条件あり | 前述の1箇所修正 |
+| GitHub | 前述の8コンバーターで子側の接続条件が欠落 | 前述の8箇所修正 |
+
+Jenkinsは `tjs.connection_id = tjb.connection_id` をJOINに追加する。通常jobとmulti-branch双方について、同じbuild名・stage IDを2接続に持つfixtureで対象接続だけの入力件数・出力を確認する。他接続だけにstageがあるケース、対応buildなしの除外も検証し、既存の単一接続動作を維持する。
+
+stagingのread-only COUNTでは、Jenkins stages=0行、builds=3行、異接続JOIN行=0行だった。従ってコード上の条件欠落は確認できるが、現在のstaging遅延の原因としてJenkinsを挙げる根拠はない。実データ再現済みのSonarQube/GitHubと区別する。
+
+今回の実装範囲は以上の計10箇所（SonarQube 1 / GitHub 8 / Jenkins 1）と対応回帰テスト。Jira/GitLabの予防的な書換えや、結合条件以外の改善は追加しない。UI受入・配備記録には対象3ツールを含め、Jenkinsに実機stageデータがない場合は合成fixtureのCI検証と実機未検証を明確に分ける。
