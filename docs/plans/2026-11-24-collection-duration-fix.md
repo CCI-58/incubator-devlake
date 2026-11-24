@@ -15,11 +15,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# 収集時間の短縮とSonarQube・GitHub接続境界の修正計画
+# 収集時間の短縮とツール接続境界の修正計画
 
 ## レビュー対象
 
-stagingの収集が長時間待機する原因を調査した結果、直列実行に加え、SonarQubeのSQL結合条件不足による処理行増幅を確認した。追加調査でGitHubにも同種の欠落を確認したため、両プラグインの接続境界の不具合を1つの独立した実装PRで修正する。承認前に製品コード、DB、稼働設定は変更しない。
+stagingの収集が長時間待機する原因を調査した結果、直列実行に加え、SonarQubeのSQL結合条件不足による処理行増幅を確認した。追加調査でGitHubとJenkinsにも同種の欠落を確認したため、3プラグインの接続境界の不具合（計10箇所）を1つの独立した実装PRで修正する。承認前に製品コード、DB、稼働設定は変更しない。
 
 本計画は「すべての遅延要因を一括変更する」ものではない。並列数変更は[GitOps #298](https://github.com/CCI-58/GitOps/pull/298)、収集ライフサイクル・receiptは[DevLake #9](https://github.com/CCI-58/incubator-devlake/pull/9)の別スコープとする。これらへの依存を増やさず、性能修正を個別にレビュー・配備できる形にする。
 
