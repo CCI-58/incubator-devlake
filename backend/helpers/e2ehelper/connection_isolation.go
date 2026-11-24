@@ -29,7 +29,8 @@ import (
 // VerifyConnectionIsolation compares the actual converter with and without
 // colliding connection-2 fixtures. Count shares the production FROM/JOIN/WHERE
 // clauses, so an upsert cannot hide duplicated input. The fixture owns both
-// input tables and uses connection 1 for the selected scope.
+// input tables: connection 1 is the selected scope, connection 2 supplies
+// collisions, and exactly two legitimate input rows are expected.
 func VerifyConnectionIsolation(t *DataFlowTester, child, parent schema.Tabler, clauses []dal.Clause, run func(), products map[schema.Tabler]int64) {
 	type savedRows struct {
 		table schema.Tabler
