@@ -1,0 +1,8 @@
+connection_id,id,issue_key,msg
+1,a,issue,local-a
+1,b,issue,local-b
+2,a,issue,foreign
+2,z,issue,foreign-only
+1,c,foreign-parent,orphan
+1,d,missing,missing
+1,e,other,other-project

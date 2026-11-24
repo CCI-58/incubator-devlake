@@ -64,25 +64,12 @@ func ConvertStages(taskCtx plugin.SubTaskContext) (err errors.Error) {
 	db := taskCtx.GetDal()
 	data := taskCtx.GetData().(*JenkinsTaskData)
 
-	clauses := []dal.Clause{
-		dal.Select(`tjb.connection_id, tjs.build_name, tjs.id, tjs._raw_data_remark, tjs.name,
+	clauses := StagesClauses(data.Options)
+	clauses = append(clauses, dal.Select(`tjb.connection_id, tjs.build_name, tjs.id, tjs._raw_data_remark, tjs.name,
 			tjs._raw_data_id, tjs._raw_data_table, tjs._raw_data_params,
 			tjs.status, tjs.start_time_millis, tjs.duration_millis,
 			tjs.pause_duration_millis, tjs.type, tjb.result,
-			tjb.triggered_by, tjb.building`),
-		dal.From("_tool_jenkins_stages tjs"),
-		dal.Join("left join _tool_jenkins_builds tjb on tjs.build_name = tjb.full_name"),
-	}
-
-	if data.Options.Class == WORKFLOW_MULTI_BRANCH_PROJECT {
-		clauses = append(clauses,
-			dal.Where(`tjb.connection_id = ? and tjb.full_name like ?`,
-				data.Options.ConnectionId, fmt.Sprintf("%s%%", data.Options.JobFullName)))
-	} else {
-		clauses = append(clauses,
-			dal.Where("tjb.connection_id = ? and tjb.job_path = ? and tjb.job_name = ? ",
-				data.Options.ConnectionId, data.Options.JobPath, data.Options.JobName))
-	}
+			tjb.triggered_by, tjb.building`))
 
 	cursor, err := db.Cursor(clauses...)
 	if err != nil {
@@ -169,4 +156,24 @@ func ConvertStages(taskCtx plugin.SubTaskContext) (err errors.Error) {
 	}
 
 	return convertor.Execute()
+}
+
+// StagesClauses scopes stages and builds to the same connection and job.
+func StagesClauses(options *JenkinsOptions) []dal.Clause {
+	clauses := []dal.Clause{
+		dal.From("_tool_jenkins_stages tjs"),
+		dal.Join("left join _tool_jenkins_builds tjb on tjs.build_name = tjb.full_name AND tjs.connection_id = tjb.connection_id"),
+	}
+
+	if options.Class == WORKFLOW_MULTI_BRANCH_PROJECT {
+		clauses = append(clauses,
+			dal.Where(`tjb.connection_id = ? and tjb.full_name like ?`,
+				options.ConnectionId, fmt.Sprintf("%s%%", options.JobFullName)))
+	} else {
+		clauses = append(clauses,
+			dal.Where("tjb.connection_id = ? and tjb.job_path = ? and tjb.job_name = ? ",
+				options.ConnectionId, options.JobPath, options.JobName))
+	}
+
+	return clauses
 }

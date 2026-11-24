@@ -63,13 +63,8 @@ func ConvertMilestones(taskCtx plugin.SubTaskContext) errors.Error {
 	repoId := data.Options.GithubId
 	connectionId := data.Options.ConnectionId
 	db := taskCtx.GetDal()
-	clauses := []dal.Clause{
-		dal.Select("gi.github_id, gm.*"),
-		dal.From("_tool_github_issues gi"),
-		dal.Join("JOIN _tool_github_milestones gm ON gm.milestone_id = gi.milestone_id"),
-		dal.Where("gm.repo_id = ? and gm.connection_id = ?", repoId, data.Options.ConnectionId),
-	}
-	cursor, err := db.Cursor(clauses...)
+	clauses := MilestonesClauses(connectionId, repoId)
+	cursor, err := db.Cursor(append(clauses, dal.Select("gi.github_id, gm.*"))...)
 	if err != nil {
 		return err
 	}
@@ -121,4 +116,13 @@ func ConvertMilestones(taskCtx plugin.SubTaskContext) errors.Error {
 	}
 
 	return converter.Execute()
+}
+
+// MilestonesClauses selects milestone issues from this connection only.
+func MilestonesClauses(connectionId uint64, repoId int) []dal.Clause {
+	return []dal.Clause{
+		dal.From("_tool_github_issues gi"),
+		dal.Join("JOIN _tool_github_milestones gm ON gm.milestone_id = gi.milestone_id AND gi.connection_id = gm.connection_id"),
+		dal.Where("gm.repo_id = ? and gm.connection_id = ?", repoId, connectionId),
+	}
 }

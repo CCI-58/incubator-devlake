@@ -119,3 +119,58 @@ stagingのread-only COUNTでは、Jenkins stages=0行、builds=3行、異接続J
 `milestone_converter.go:69` は `gm.milestone_id = gi.milestone_id` のみでJOINし、WHEREはmilestone側のrepo/connectionだけを絞っている。issue側にも `gi.connection_id = gm.connection_id` を要求する修正を、今回のGitHub9箇所に含める。
 
 2026-11-24 18:16頃JST、stagingのrepo_id=1057710129、gm.connection_id=10でread-only COUNTを実施した結果、現行JOIN=0件、接続条件追加後=0件だった。この対象では行増幅を実測できておらず、PR commitの実測とは区別する。コード上の欠落は確認済みで、同じmilestone_id・issue IDを異なる接続に持つfixtureにより、対象接続のissueだけが各1回入力され、sprint_issues等の出力へ他接続のissueが混入しないことをMySQL/PostgreSQLのe2eで検証する。他接続だけにissueがある場合、単一接続、再実行時の安定性も確認する。
+
+
+## 配備時の既存ドメイン行の収束確認（PR #11レビュー反映）
+
+今回のJOIN修正は、新しい誤関連付けを止める。旧コードが作った行を無条件で削除するものではない。
+
+`DataConverter.Execute` は出力IDを現在の実行接続Aで生成する一方、RawDataOriginを入力行からコピーする。このため別接続Bの子行を取り込んだ既存行は「AのID / Bのparams」となり得る。`BatchSaveDivider.ForType` の既存行削除は実行中のraw table/paramsに限定されるため、Aの再収集だけではBのparamsを持つ不要行が残り得る。また、入力0件・その出力型の生成0件ではForTypeが呼ばれず、削除も行われない。**全接続の再収集を開始しただけで収束済みと扱わない。**
+
+### 配備前の確認
+
+1. 同じrepo/project/jobを取得する全接続・scopeを一覧化し、有効/無効/削除済み、対応CCIプロジェクト、UIから再収集可能かを記録する。接続や権限は統合・変更しない。
+2. [読み取り専用の出力キー見積SQL](2026-11-25-connection-join-key-estimate.sql) で、旧JOINが作るdistinctキーと接続一致条件を満たすキーを比較する。行増幅率と、消えるべき出力キー数を分けて記録する。SQLはstagingのMySQL用で、DB書換えはしない。
+3. 対象ドメイン表ごとに、ID内の接続と `_raw_data_params` の接続を読み取り専用で比較する。GitHub/JenkinsのJSONキーは `ConnectionId`、SonarQubeは `connectionId` である。plugin/modelのID形式、複合キー、raw table、scopeを限定して比較し、空/不正JSON・解析不能なIDは0件へ丸めず別件数にする。結果はテーブル・接続・scope別の件数で保管し、認証情報やrawデータ本文をPRに掲載しない。
+4. ID/paramsの一致だけでは正常とは断定できないため、旧JOINでのみ生成されるキーと現在のドメイン行の存在も突合する。GitHub milestoneはSprintIssueだけでなくSprint/BoardSprintにも出力するため、関連する全出力表を確認する。この移行監査は性能測定とは別の必須配備ゲートとする。
+
+### 配備後の手順と完了条件
+
+1. 修正版配備後、同じ対象を持つ**全ての有効接続のパイプラインを1回ずつ**、通常CCI UIからPlaywrightで再収集し、成功完了を確認する。スケジュール収集が同時に走る場合も実行IDを記録する。
+2. 前項のドメイン監査を再実行し、接続不一致・旧JOIN由来の不要キーが0件で、解析不能行も未説明のまま残っていないことを確認する。0入力の接続、無効/削除済み接続・scope、UIから再実行できないものは明示して残件にする。
+3. 旧キーとの差分に説明できない増減がないこと、正当な出力を欠落させていないこと、関連するUI表示の変化が想定範囲内であることを確認する。キー件数の減少をそのまま指標値の減少量とみなさない。
+4. 残存する場合は本PRへ「配備済み・データ収束未完」と記録し、対象キー・件数・退避/復旧方法を含む別のデータ補正案をレビューに出す。今回は削除SQLを用意・実行せず、DB/APIで接続や収集状態を書き換えない。単に全接続再実行済みという理由で終了しない。
+
+### staging事前見積（2026-11-25、配備前）
+
+staging DB内に保存された全接続・repo/project/jobのtool行が対象であり、有効なCCIプロジェクトだけに限定した件数ではない。raw JOIN行数ではなく、接続/scopeとコンバーターの出力キー構成で重複排除し、そのキーに同接続の入力が1行でもあるかを比較した。現在のdomain行が実際に何件削除されるかを表すものではない。配備直前にはデータ増加と有効scopeを再確認する。
+
+| 変換 | 旧キー | 接続一致キー | 旧JOINでのみ生成されるキー |
+| --- | ---: | ---: | ---: |
+| GitHub PR commit | 76,944 | 76,779 | 165 |
+| GitHub PR issue | 0 | 0 | 0 |
+| GitHub PR label | 1,402 | 1,397 | 5 |
+| GitHub PR comment | 38,454 | 38,404 | 50 |
+| GitHub PR review | 1,945 | 1,933 | 12 |
+| GitHub reviewer | 733 | 732 | 1 |
+| GitHub issue comment | 519 | 519 | 0 |
+| GitHub issue label | 73 | 73 | 0 |
+| GitHub milestone→issue | 0 | 0 | 0 |
+| SonarQube code block | 120,906 | 120,906 | 0 |
+| Jenkins stage | 0 | 0 | 0 |
+
+GitHubの関連キーでは合計233件が旧JOINだけのキー。SonarQubeは入力行が増幅していてもdistinctキーの減少は0件であり、性能改善と表示値変化を区別する必要がある。この見積は同じキーに別接続の内容が上書きされる問題を数えないため、件数一致だけでは十分でなく内容の確認も必要である。
+
+今回実施したのは事前の出力キー見積である。以下の監査SQLによる認識済みモデルの事前監査は実施済み。接頭辞不明行の棚卸し、有効scopeとの対応付け、旧キー実在行の突合は配備前ゲートとして残す。修正版は未配備であり、全接続のUI再収集・配備後監査も受入の残件として引き継ぐ。
+
+
+### 同じSQLによる配備前後の接続・origin監査
+
+[MySQL 8用の読み取り専用監査SQL](2026-11-25-connection-domain-origin-audit.sql) を配備前後で同じ条件で実行し、結果を別ファイルで保存する。対象13出力区分（PR commentsはcomment/reviewのモデル別、milestoneは3出力表）について主要IDと関連IDの接続、およびparamsの接続を比較する。モデル定義に従いGitHub/Jenkinsは `ConnectionId`、SonarQubeは `connectionId` を参照する。
+
+SQLは認識済みのplugin/model接頭辞を持つ全保存scopeを対象とし、他モデルや接頭辞自体が壊れたIDは対象外である。これらは手順3のraw table/scope棚卸しで別途確認する。認識済み接頭辞でもID形式不正、paramsが空・不正JSON・接続値なしの場合は独立した区分で集計する。複数問題が同じ行にある場合はID不正→params不正→関連ID不一致→origin不一致の順で分類する。`connection_matches` は接続の一致だけを示し、内容の正しさや旧キーの残存がないことの証明ではない。
+
+出力にraw params本文や個別のエンティティIDは含めない。0件の区分は出力されないので、対象表/モデルの入力総数との突合も行う。SQL単独の結果で配備受入を終了せず、旧JOINのみのキーの実在確認、無効/削除済みscope確認、通常UIからの全有効接続の再収集も計画どおり実施する。
+
+
+2026-11-25に上記SQLをstagingで読み取り専用実行し、`connection_matches` 143,539行、`origin_connection_mismatch` 68,052行を確認した。対象内の他の分類は出力なしだった。集計対象は全保存scopeであり、有効接続だけの件数ではない。これは233の旧JOINだけのキー見積とは別で、現在のドメイン行のorigin不一致件数である。正当なキーでも他接続のoriginが上書きされた行を含み得るため、68,052行を削除対象とみなさない。認識済みモデルの事前基準として配備後と比較し、対象外の壊れた接頭辞・有効scope対応・旧キーの実在は別途確認する。今回データの変更・削除は行っていない。

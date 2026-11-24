@@ -52,12 +52,9 @@ func ConvertPullRequestIssues(taskCtx plugin.SubTaskContext) errors.Error {
 	data := taskCtx.GetData().(*GithubTaskData)
 	repoId := data.Options.GithubId
 
-	cursor, err := db.Cursor(
-		dal.From(&models.GithubPrIssue{}),
-		dal.Join(`left join _tool_github_pull_requests on _tool_github_pull_requests.github_id = _tool_github_pull_request_issues.pull_request_id`),
-		dal.Where("_tool_github_pull_requests.repo_id = ? and _tool_github_pull_requests.connection_id = ?", repoId, data.Options.ConnectionId),
-		dal.Orderby("pull_request_id ASC"),
-	)
+	clauses := PullRequestIssuesClauses(data.Options.ConnectionId, repoId)
+	clauses = append(clauses, dal.Orderby("pull_request_id ASC"))
+	cursor, err := db.Cursor(clauses...)
 	if err != nil {
 		return err
 	}
@@ -94,4 +91,14 @@ func ConvertPullRequestIssues(taskCtx plugin.SubTaskContext) errors.Error {
 	}
 
 	return converter.Execute()
+}
+
+// PullRequestIssuesClauses selects only relations owned by this connection and repository.
+// Projection and ordering belong to the caller so these clauses also support Count.
+func PullRequestIssuesClauses(connectionId uint64, repoId int) []dal.Clause {
+	return []dal.Clause{
+		dal.From(&models.GithubPrIssue{}),
+		dal.Join(`left join _tool_github_pull_requests on _tool_github_pull_requests.github_id = _tool_github_pull_request_issues.pull_request_id AND _tool_github_pull_request_issues.connection_id = _tool_github_pull_requests.connection_id`),
+		dal.Where("_tool_github_pull_requests.repo_id = ? and _tool_github_pull_requests.connection_id = ?", repoId, connectionId),
+	}
 }
