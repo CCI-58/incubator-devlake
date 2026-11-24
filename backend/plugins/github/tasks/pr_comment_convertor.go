@@ -54,12 +54,8 @@ func ConvertPullRequestComments(taskCtx plugin.SubTaskContext) errors.Error {
 	data := taskCtx.GetData().(*GithubTaskData)
 	repoId := data.Options.GithubId
 
-	cursor, err := db.Cursor(
-		dal.From(&models.GithubPrComment{}),
-		dal.Join("left join _tool_github_pull_requests "+
-			"on _tool_github_pull_requests.github_id = _tool_github_pull_request_comments.pull_request_id"),
-		dal.Where("repo_id = ? and _tool_github_pull_requests.connection_id = ?", repoId, data.Options.ConnectionId),
-	)
+	clauses := PullRequestCommentsClauses(data.Options.ConnectionId, repoId)
+	cursor, err := db.Cursor(clauses...)
 	if err != nil {
 		return err
 	}
@@ -117,4 +113,15 @@ func getStdCommentType(originType string) string {
 		return code.NORMAL_COMMENT
 	}
 	return ""
+}
+
+// PullRequestCommentsClauses selects only relations owned by this connection and repository.
+// Projection and ordering belong to the caller so these clauses also support Count.
+func PullRequestCommentsClauses(connectionId uint64, repoId int) []dal.Clause {
+	return []dal.Clause{
+		dal.From(&models.GithubPrComment{}),
+		dal.Join("left join _tool_github_pull_requests " +
+			"on _tool_github_pull_requests.github_id = _tool_github_pull_request_comments.pull_request_id AND _tool_github_pull_request_comments.connection_id = _tool_github_pull_requests.connection_id"),
+		dal.Where("repo_id = ? and _tool_github_pull_requests.connection_id = ?", repoId, connectionId),
+	}
 }

@@ -53,12 +53,8 @@ func ConvertIssueComments(taskCtx plugin.SubTaskContext) errors.Error {
 	data := taskCtx.GetData().(*GithubTaskData)
 	repoId := data.Options.GithubId
 
-	cursor, err := db.Cursor(
-		dal.From(&models.GithubIssueComment{}),
-		dal.Join("left join _tool_github_issues "+
-			"on _tool_github_issues.github_id = _tool_github_issue_comments.issue_id"),
-		dal.Where("repo_id = ? and _tool_github_issues.connection_id = ?", repoId, data.Options.ConnectionId),
-	)
+	clauses := IssueCommentsClauses(data.Options.ConnectionId, repoId)
+	cursor, err := db.Cursor(clauses...)
 	if err != nil {
 		return err
 	}
@@ -102,4 +98,15 @@ func ConvertIssueComments(taskCtx plugin.SubTaskContext) errors.Error {
 	}
 
 	return converter.Execute()
+}
+
+// IssueCommentsClauses selects only relations owned by this connection and repository.
+// Projection and ordering belong to the caller so these clauses also support Count.
+func IssueCommentsClauses(connectionId uint64, repoId int) []dal.Clause {
+	return []dal.Clause{
+		dal.From(&models.GithubIssueComment{}),
+		dal.Join("left join _tool_github_issues " +
+			"on _tool_github_issues.github_id = _tool_github_issue_comments.issue_id AND _tool_github_issue_comments.connection_id = _tool_github_issues.connection_id"),
+		dal.Where("repo_id = ? and _tool_github_issues.connection_id = ?", repoId, connectionId),
+	}
 }

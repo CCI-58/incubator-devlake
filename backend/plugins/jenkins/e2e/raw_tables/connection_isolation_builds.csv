@@ -1,0 +1,5 @@
+connection_id,full_name,job_path,job_name,result
+1,job#1,path/,job,SUCCESS
+2,job#1,path/,job,FAILURE
+2,job#2,path/,job,SUCCESS
+1,other#1,other/,other,SUCCESS

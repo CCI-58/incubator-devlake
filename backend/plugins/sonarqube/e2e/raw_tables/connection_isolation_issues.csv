@@ -1,0 +1,5 @@
+connection_id,issue_key,project_key
+1,issue,project
+2,issue,project
+2,foreign-parent,project
+1,other,other-project
