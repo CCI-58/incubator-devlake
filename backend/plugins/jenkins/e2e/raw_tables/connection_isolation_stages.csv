@@ -1,0 +1,8 @@
+connection_id,id,build_name,name,status,start_time_millis,duration_millis
+1,a,job#1,local-a,SUCCESS,1700000000000,1000
+1,b,job#1,local-b,SUCCESS,1700000000000,1000
+2,a,job#1,foreign,SUCCESS,1700000000000,1000
+2,z,job#1,foreign-only,SUCCESS,1700000000000,1000
+1,c,job#2,orphan,SUCCESS,1700000000000,1000
+1,d,missing,missing,SUCCESS,1700000000000,1000
+1,e,other#1,other,SUCCESS,1700000000000,1000

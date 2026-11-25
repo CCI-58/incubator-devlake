@@ -35,11 +35,8 @@ func ConvertIssueCodeBlocks(taskCtx plugin.SubTaskContext) errors.Error {
 	db := taskCtx.GetDal()
 	rawDataSubTaskArgs, data := CreateRawDataSubTaskArgs(taskCtx, RAW_ISSUES_TABLE)
 
-	cursor, err := db.Cursor(
-		dal.Select("icb.*"),
-		dal.From("_tool_sonarqube_issue_code_blocks icb"),
-		dal.Join("left join _tool_sonarqube_issues i on i.issue_key = icb.issue_key"),
-		dal.Where("icb.connection_id = ? and project_key = ?", data.Options.ConnectionId, data.Options.ProjectKey))
+	clauses := IssueCodeBlocksClauses(data.Options.ConnectionId, data.Options.ProjectKey)
+	cursor, err := db.Cursor(append(clauses, dal.Select("icb.*"))...)
 	if err != nil {
 		return err
 	}
@@ -83,4 +80,14 @@ var ConvertIssueCodeBlocksMeta = plugin.SubTaskMeta{
 	EnabledByDefault: true,
 	Description:      "Convert tool layer table sonarqube_issues into domain layer table cq_issue_code_blocks",
 	DomainTypes:      []string{plugin.DOMAIN_TYPE_CODE_QUALITY},
+}
+
+// IssueCodeBlocksClauses keeps code blocks and issues within the same connection.
+// Select is added by the cursor caller, allowing Count to use the same scope.
+func IssueCodeBlocksClauses(connectionId uint64, projectKey string) []dal.Clause {
+	return []dal.Clause{
+		dal.From("_tool_sonarqube_issue_code_blocks icb"),
+		dal.Join("left join _tool_sonarqube_issues i on i.issue_key = icb.issue_key AND i.connection_id = icb.connection_id"),
+		dal.Where("icb.connection_id = ? and i.project_key = ?", connectionId, projectKey),
+	}
 }

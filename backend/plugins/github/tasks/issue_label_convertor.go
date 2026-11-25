@@ -51,12 +51,9 @@ func ConvertIssueLabels(taskCtx plugin.SubTaskContext) errors.Error {
 	data := taskCtx.GetData().(*GithubTaskData)
 	repoId := data.Options.GithubId
 
-	cursor, err := db.Cursor(
-		dal.From(&models.GithubIssueLabel{}),
-		dal.Join(`left join _tool_github_issues on _tool_github_issues.github_id = _tool_github_issue_labels.issue_id`),
-		dal.Where("_tool_github_issues.repo_id = ? and _tool_github_issues.connection_id = ?", repoId, data.Options.ConnectionId),
-		dal.Orderby("issue_id ASC"),
-	)
+	clauses := IssueLabelsClauses(data.Options.ConnectionId, repoId)
+	clauses = append(clauses, dal.Orderby("issue_id ASC"))
+	cursor, err := db.Cursor(clauses...)
 	if err != nil {
 		return err
 	}
@@ -90,4 +87,14 @@ func ConvertIssueLabels(taskCtx plugin.SubTaskContext) errors.Error {
 	}
 
 	return converter.Execute()
+}
+
+// IssueLabelsClauses selects only relations owned by this connection and repository.
+// Projection and ordering belong to the caller so these clauses also support Count.
+func IssueLabelsClauses(connectionId uint64, repoId int) []dal.Clause {
+	return []dal.Clause{
+		dal.From(&models.GithubIssueLabel{}),
+		dal.Join(`left join _tool_github_issues on _tool_github_issues.github_id = _tool_github_issue_labels.issue_id AND _tool_github_issue_labels.connection_id = _tool_github_issues.connection_id`),
+		dal.Where("_tool_github_issues.repo_id = ? and _tool_github_issues.connection_id = ?", repoId, connectionId),
+	}
 }
