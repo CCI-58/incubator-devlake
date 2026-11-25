@@ -305,13 +305,19 @@ behavior. Cancellation dispatch does not recurse.
 
 Receipt errors preserve known 4xx statuses (invalid identity 400, missing blueprint
 404, instance/identity conflict 409); unexpected/storage failures remain 503 with
-no internal error details in the response. No 4xx response is evidence that a
-previously dispatched request did not run.
+no internal error details in the response. **400 also includes a temporary
+admission conflict when the same blueprint already has a pending pipeline**,
+because the existing creation path reports this as BadInput. Therefore a client
+must not classify every 400 (or every 4xx) as a permanent, non-retryable failure.
+The current CCI client handles all non-2xx responses as unconfirmed; HTTP status
+alone must not be used to discard a request or release its reservation. Preserve
+the request identity and resolve it before deciding whether another admission is
+safe. No 4xx response is evidence that a previously dispatched request did not run.
 
 Source-control pipeline admission is a shared fence, not mutual exclusion between
 pipeline writers. Receipt start and legacy rerun therefore share the pipeline
 creation mutex through transaction completion. A legacy rerun is rejected with
 409 while the same blueprint has a pending receipt; if rerun wins first, receipt
-start observes the existing pending pipeline and is rejected. Unrelated ordinary
+start observes the existing pending pipeline and is rejected with 400. Unrelated ordinary
 reruns retain their previous validation and database transaction path. This relies
 on the existing single-backend-per-database deployment assumption.
