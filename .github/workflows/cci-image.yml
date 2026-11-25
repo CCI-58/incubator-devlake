@@ -77,7 +77,7 @@ jobs:
       - name: Prepare isolated source-control test database
         run: |
           docker exec -e MYSQL_PWD=ci-isolated-root "${{ job.services.mysql.id }}" \
-            mysql -uroot -e "CREATE DATABASE IF NOT EXISTS lake_sourcecontrol_test; GRANT ALL ON lake_sourcecontrol_test.* TO 'merico'@'%';"
+            mysql -uroot -e "SET GLOBAL log_bin_trust_function_creators=1; CREATE DATABASE IF NOT EXISTS lake_sourcecontrol_test; GRANT ALL ON lake_sourcecontrol_test.* TO 'merico'@'%';"
       - name: Source-control tests
         working-directory: backend
         env:

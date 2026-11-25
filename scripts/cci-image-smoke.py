@@ -16,6 +16,8 @@
 #
 
 """Exercise only the disposable CI image/database, including backend restart."""
+import concurrent.futures
+import threading
 import hashlib
 import hmac
 import json
@@ -53,7 +55,7 @@ def request(method, path, expected, body=None, owner=False, control=False, resol
             status, payload = response.status, response.read()
     except urllib.error.HTTPError as error:
         status, payload = error.code, error.read()
-    if status != expected:
+    if status not in (expected if isinstance(expected, tuple) else (expected,)):
         raise RuntimeError(f"{method} {path}: expected {expected}, got {status}")
     return json.loads(payload) if payload else None
 
@@ -121,6 +123,121 @@ def verify_resolution_lifecycle():
     request("DELETE", "/cci/source-control/" + NEXT_OPERATION, 204, control=True)
 
 
+def isolated_mysql(sql):
+    # This script owns the CI-only lake database and uses only fixed test credentials.
+    return subprocess.check_output(["docker", "run", "--rm", "--network", "host",
+        "--env", "MYSQL_PWD=ci-isolated-db", "mysql:8.0.36", "mysql", "-h127.0.0.1",
+        "-umerico", "-Dlake", "-N", "-B", "-e", sql], text=True).strip()
+
+
+def verify_receipt_rollback():
+    bp=request("POST","/blueprints",201,{"name":"cci-receipt-rollback","enable":True,"mode":"ADVANCED",
+        "cronConfig":"0 0 1 1 *","plan":[[{"plugin":"gitextract","subtasks":["extractRepoMeta"],
+        "options":{"url":"/nonexistent-ci-repository"}}]]})
+    instance=request("GET","/cci/collection-requests/capabilities",200,control=True)["instance"]
+    counts="SELECT (SELECT count(*) FROM _devlake_pipelines),(SELECT count(*) FROM _devlake_tasks)"
+    before=isolated_mysql(counts)
+    isolated_mysql("CREATE TRIGGER cci_receipt_fault BEFORE INSERT ON _devlake_cci_collection_receipts FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='isolated receipt fault'")
+    path="/cci/collection-requests/66666666-bbbb-cccc-dddd-eeeeeeeeeeee"
+    try:
+        request("POST",path+"/start",503,{"blueprintId":bp["id"],"instance":instance},control=True)
+    finally:
+        isolated_mysql("DROP TRIGGER cci_receipt_fault")
+    assert isolated_mysql(counts)==before, "receipt failure leaked a pipeline/task transaction"
+    retired=request("POST",path+"/resolve",200,{"blueprintId":bp["id"],"instance":instance},control=True)
+    assert retired["state"]=="RETIRED"
+    assert request("POST",path+"/start",200,{"blueprintId":bp["id"],"instance":instance},control=True)==retired
+
+
+def verify_collection_receipts():
+    capability = "/cci/collection-requests/capabilities"
+    request("GET", capability, 403)
+    assert request("GET", capability, 200, control=True)["receipts"]==1
+    retired = "44444444-bbbb-cccc-dddd-eeeeeeeeeeee"
+    path = "/cci/collection-requests/" + retired
+    instance=request("GET",capability,200,control=True)["instance"]
+    body = {"blueprintId":987654321,"instance":instance}
+    request("POST",path+"/resolve",409,{"blueprintId":987654321,"instance":"ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee"},control=True)
+    state = request("POST",path+"/resolve",200,body,control=True)
+    assert state["state"] == "RETIRED" and state["pipelineId"] == 0
+    request("POST",path+"/start",403,body)
+    assert request("POST",path+"/start",200,body,control=True)==state
+    subprocess.run(["docker","restart",NAME],check=True,stdout=subprocess.DEVNULL)
+    ready()
+    assert request("POST",path+"/start",200,body,control=True)==state
+    request("POST",path+"/start",409,{"blueprintId":987654322,"instance":instance},control=True)
+    request("POST", "/cci/collection-requests/not-a-uuid/start", 400, body, control=True)
+    request("POST", "/cci/collection-requests/77777777-bbbb-cccc-dddd-eeeeeeeeeeee/start", 404, body, control=True)
+    # A real pipeline and receipt commit together; ignore the first reply and resolve by UUID.
+    bp=request("POST","/blueprints",201,{"name":"cci-receipt-smoke","enable":True,"mode":"ADVANCED",
+        "cronConfig":"0 0 1 1 *","plan":[[{"plugin":"gitextract","subtasks":["extractRepoMeta"],
+        "options":{"url":"/nonexistent-ci-repository"}}]]})
+    bp_id=bp["id"]
+    bound_path="/cci/collection-requests/55555555-bbbb-cccc-dddd-eeeeeeeeeeee"
+    body={"blueprintId":bp_id,"instance":instance}
+    first=request("POST",bound_path+"/start",200,body,control=True)
+    assert first["state"]=="BOUND" and first["pipelineId"]>0
+    resolved=request("POST",bound_path+"/resolve",200,body,control=True)
+    assert resolved["pipelineId"]==first["pipelineId"]
+    duplicate=request("POST",bound_path+"/start",200,body,control=True)
+    assert duplicate["pipelineId"]==first["pipelineId"]
+    subprocess.run(["docker","restart",NAME],check=True,stdout=subprocess.DEVNULL)
+    ready()
+    assert request("POST",bound_path+"/resolve",200,body,control=True)["pipelineId"]==first["pipelineId"]
+    pipelines=request("GET",f"/pipelines?blueprint_id={bp_id}&page=1&pagesize=100",200)
+    assert pipelines["count"]==1
+    acknowledged=request("POST",bound_path+"/cancel",200,body,control=True)
+    assert not acknowledged["ended"], "cancel acknowledgement must not certify termination"
+    ended=request("POST",bound_path+"/resolve",200,body,control=True)
+    assert ended["ended"] and not ended["succeeded"] and ended["pipelineId"]==first["pipelineId"]
+    subprocess.run(["docker","restart",NAME],check=True,stdout=subprocess.DEVNULL)
+    ready()
+    assert request("POST",bound_path+"/resolve",200,body,control=True)==ended
+    # DevLake UI uses DELETE /pipelines/:id. It must preserve durable end evidence.
+    ui_path = "/cci/collection-requests/88888888-bbbb-cccc-dddd-eeeeeeeeeeee"
+    ui_started = request("POST", ui_path+"/start", 200, body, control=True)
+    ui_id = ui_started["pipelineId"]
+    request("DELETE", f"/pipelines/{ui_id}", 200)
+    ui_ended = request("POST", ui_path+"/resolve", 200, body, control=True)
+    assert ui_ended["ended"] and not ui_ended["succeeded"]
+    request("DELETE", f"/pipelines/{ui_id}", 200)  # idempotent, no recursive dispatch
+    request("POST", f"/pipelines/{ui_id}/rerun", 409, {})
+    subprocess.run(["docker", "restart", NAME], check=True, stdout=subprocess.DEVNULL)
+    ready()
+    assert request("POST", ui_path+"/resolve", 200, body, control=True) == ui_ended
+
+    # Ordinary trigger/cancel/rerun remain usable; both admission orders are safe.
+    ordinary = request("POST", f"/blueprints/{bp_id}/trigger", 200, {})
+    ordinary_id = ordinary["id"]
+    request("DELETE", f"/pipelines/{ordinary_id}", 200)
+    request("POST", f"/pipelines/{ordinary_id}/rerun", 200, {})
+    conflict_path = "/cci/collection-requests/99999999-bbbb-cccc-dddd-eeeeeeeeeeee"
+    request("POST", conflict_path+"/start", 400, body, control=True)
+    request("DELETE", f"/pipelines/{ordinary_id}", 200)
+    receipt = request("POST", conflict_path+"/start", 200, body, control=True)
+    request("POST", f"/pipelines/{ordinary_id}/rerun", 409, {})
+    request("DELETE", f"/pipelines/{receipt['pipelineId']}", 200)
+
+    # Race legacy rerun against receipt admission: at most one pending pipeline.
+    barrier = threading.Barrier(2)
+    race_path = "/cci/collection-requests/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    def start_race():
+        barrier.wait()
+        return request("POST", race_path+"/start", (200, 400), body, control=True)
+    def rerun_race():
+        barrier.wait()
+        return request("POST", f"/pipelines/{ordinary_id}/rerun", (200, 409), {})
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(start_race), pool.submit(rerun_race)]
+        for future in futures:
+            future.result()
+    pending = request("GET", f"/pipelines?blueprint_id={bp_id}&pending=1", 200)
+    assert pending["count"] == 1, "receipt start and rerun admitted duplicate pending pipelines"
+    for pipeline in pending["pipelines"]:
+        request("DELETE", f"/pipelines/{pipeline['id']}", 200)
+
+
+
 def main():
     image = os.environ["TEST_IMAGE"]
     revision = os.environ["TEST_REVISION"]
@@ -128,6 +245,7 @@ def main():
         "docker", "run", "--detach", "--name", NAME, "--network", "host",
         "--env", "DB_URL=mysql://merico:ci-isolated-db@127.0.0.1:3306/lake?charset=utf8mb4&parseTime=True&loc=UTC",
         "--env", "PORT=18080", "--env", "MODE=release",
+        "--env", "CONSUME_PIPELINES=false",
         "--env", "FORCE_MIGRATION=true", "--env", "DISABLED_REMOTE_PLUGINS=true",
         "--env", "ENCRYPTION_SECRET=0123456789abcdef0123456789abcdef",
         "--env", "CCI_SOURCE_CONTROL_KEY=" + KEY, image,
@@ -154,6 +272,8 @@ def main():
         request("POST", "/cci/source-control", 409, {"operation": OPERATION, "blueprints": []}, control=True)
         request("POST", "/cci/source-control/" + OPERATION + "/cancel", 200, {}, control=True)
         verify_resolution_lifecycle()
+        verify_collection_receipts()
+        verify_receipt_rollback()
         print("Built image: source revision, fence, cancellation, quiescence, cleanup token, restart and release receipts verified.")
     finally:
         subprocess.run(["docker", "rm", "--force", NAME], check=False, stdout=subprocess.DEVNULL)

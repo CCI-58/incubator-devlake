@@ -264,3 +264,60 @@ It verifies old-token rejection, normal-release/cancel rejection, and the
 historical release receipt after a new owner acquires the fence and the image
 restarts again. These additions are wired into the existing complete-image CI
 job; the updated full-image smoke has not been run locally.
+
+## Native collection receipts (collection protocol 1)
+
+The authenticated `/cci/collection-requests/capabilities` endpoint advertises
+`{"protocol":1,"receipts":1}`. This is separate from source-control ownership.
+`POST /cci/collection-requests/<UUID>/{start,resolve,cancel}` accepts an immutable
+`{"blueprintId":<positive ID>}` and always requires `X-CCI-Control-Key`.
+`start` performs FULL collection through the normal blueprint validation and
+pending checks. Pipeline, tasks, and request receipt commit in one transaction.
+Repeating a UUID never creates another pipeline, even after its first one ends.
+`resolve` never starts work. It returns the committed pipeline or persists a
+permanent RETIRED tombstone, so a delayed start cannot create work afterwards.
+Only requests originally sent through this protocol may be resolved this way;
+absence is never proof about a historical uncorrelated `/blueprints/.../trigger`.
+The existing source-control HTTP fence also protects these mutations.
+
+BOUND responses include `ended`/`succeeded`. End proof requires matching FULL
+pipeline identity and terminal pipeline/tasks/subtasks; elapsed time and a
+successful cancellation response are not proof. `cancel` targets only the bound
+pipeline and retains its receipt. Unconfirmed or incomplete termination keeps
+`ended=false`. Never delete a receipt, reset the table, or silently fall back to
+legacy trigger when this capability is unavailable. CCI must pin the endpoint,
+retain its bounded retry budget, and reconcile its own job/publication records
+before releasing its reservation. Old images do not implement this protocol;
+image publication, CCI integration and deployment acceptance remain separate.
+
+Receipt creation uses an ordinary InnoDB transaction, without MySQL `LOCK TABLES`/`UNLOCK TABLES` (which implicitly commit). CI injects a failing receipt INSERT after pipeline/task INSERTs and checks that neither survives. Legacy creation retains its existing locking.
+
+Receipt-owned queued cancellation serializes with dequeue through commit, checks that no task/subtask started, and atomically records terminal task/pipeline timestamps. The cancel response is still not the end certificate: callers resolve again. Legacy rerun rejects receipt-owned pipelines so a verified terminal receipt cannot be revived. The image smoke disables queue consumption to deterministically verify queued cancellation and restart durability; it is not a live tool-collection acceptance test.
+
+The capability includes the durable database `instance` UUID. CCI must persist it before dispatch and include it in all start/resolve/cancel bodies; receipts echo it. A different database/endpoint rejects the request before writing even a retirement marker. Restoring/cloning this database must preserve its execution isolation: copying a database also copies this identity and must not create two concurrently active backends.
+
+Receipt-managed pipelines cancelled through DevLake's existing UI/API
+(`DELETE /pipelines/:id`) use the same dequeue-safe cancellation as the CCI
+receipt endpoint. Pending pipelines receive atomic task/pipeline finish evidence;
+already-started pipelines retain legacy task cancellation and must still prove
+termination on a later resolve. Ordinary pipelines keep their legacy cancellation
+behavior. Cancellation dispatch does not recurse.
+
+Receipt errors preserve known 4xx statuses (invalid identity 400, missing blueprint
+404, instance/identity conflict 409); unexpected/storage failures remain 503 with
+no internal error details in the response. **400 also includes a temporary
+admission conflict when the same blueprint already has a pending pipeline**,
+because the existing creation path reports this as BadInput. Therefore a client
+must not classify every 400 (or every 4xx) as a permanent, non-retryable failure.
+The current CCI client handles all non-2xx responses as unconfirmed; HTTP status
+alone must not be used to discard a request or release its reservation. Preserve
+the request identity and resolve it before deciding whether another admission is
+safe. No 4xx response is evidence that a previously dispatched request did not run.
+
+Source-control pipeline admission is a shared fence, not mutual exclusion between
+pipeline writers. Receipt start and legacy rerun therefore share the pipeline
+creation mutex through transaction completion. A legacy rerun is rejected with
+409 while the same blueprint has a pending receipt; if rerun wins first, receipt
+start observes the existing pending pipeline and is rejected with 400. Unrelated ordinary
+reruns retain their previous validation and database transaction path. This relies
+on the existing single-backend-per-database deployment assumption.
