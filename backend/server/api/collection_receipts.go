@@ -66,7 +66,11 @@ func registerCollectionReceipts(router *gin.Engine, control *sourcecontrol.Contr
 		}
 		receipt, err := services.ResolveOrStartCollection(ctx.Param("request"), body.Blueprint, action != "start", body.Instance)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "collection request unconfirmed"})
+			status := err.GetType().GetHttpCode()
+			if status < 400 || status >= 500 {
+				status = http.StatusServiceUnavailable
+			}
+			ctx.AbortWithStatusJSON(status, gin.H{"message": "collection request unconfirmed"})
 			return
 		}
 		if action == "cancel" && receipt.Pipeline > 0 && !receipt.Ended {

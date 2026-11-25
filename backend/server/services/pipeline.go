@@ -431,6 +431,19 @@ func NotifyExternal(pipelineId uint64) errors.Error {
 
 // CancelPipeline FIXME ...
 func CancelPipeline(pipelineId uint64) errors.Error {
+	count, err := db.Count(dal.From(&collectionReceiptRow{}), dal.Where("pipeline = ?", pipelineId))
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return CancelReceiptPipeline(pipelineId)
+	}
+	return cancelPipelineWithoutReceipt(pipelineId)
+}
+
+// Preserve legacy cancellation for ordinary pipelines and already-started work.
+// Receipt cancellation uses this directly to avoid recursive dispatch.
+func cancelPipelineWithoutReceipt(pipelineId uint64) errors.Error {
 	// prevent RunPipelineInQueue from consuming pending pipelines
 	pipeline := &models.Pipeline{}
 	err := db.First(pipeline, dal.Where("id = ?", pipelineId))
@@ -502,6 +515,23 @@ func RerunPipeline(pipelineId uint64, task *models.Task) (tasks []*models.Task, 
 		return nil, err
 	}
 	defer release()
+	// sourcePipeline is a shared admission fence, not a creation mutex.
+	// Match receipt/ordinary creation lock order and hold through commit.
+	createDbPipelineLock.Lock()
+	defer createDbPipelineLock.Unlock()
+	if existing.BlueprintId > 0 {
+		pendingReceipt, checkErr := db.Count(
+			dal.From(&collectionReceiptRow{}),
+			dal.Join("JOIN _devlake_pipelines p ON p.id = _devlake_cci_collection_receipts.pipeline"),
+			dal.Where("p.blueprint_id = ? AND p.status IN ?", existing.BlueprintId, models.PendingTaskStatus),
+		)
+		if checkErr != nil {
+			return nil, checkErr
+		}
+		if pendingReceipt > 0 {
+			return nil, errors.HttpStatus(409).New("blueprint has a pending collection receipt")
+		}
+	}
 	// prevent pipeline executor from doing anything that might jeopardize the integrity
 	pipeline := &models.Pipeline{}
 	txHelper := dbhelper.NewTxHelper(basicRes, &err)

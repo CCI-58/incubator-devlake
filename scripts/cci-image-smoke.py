@@ -16,6 +16,8 @@
 #
 
 """Exercise only the disposable CI image/database, including backend restart."""
+import concurrent.futures
+import threading
 import hashlib
 import hmac
 import json
@@ -53,7 +55,7 @@ def request(method, path, expected, body=None, owner=False, control=False, resol
             status, payload = response.status, response.read()
     except urllib.error.HTTPError as error:
         status, payload = error.code, error.read()
-    if status != expected:
+    if status not in (expected if isinstance(expected, tuple) else (expected,)):
         raise RuntimeError(f"{method} {path}: expected {expected}, got {status}")
     return json.loads(payload) if payload else None
 
@@ -155,7 +157,7 @@ def verify_collection_receipts():
     path = "/cci/collection-requests/" + retired
     instance=request("GET",capability,200,control=True)["instance"]
     body = {"blueprintId":987654321,"instance":instance}
-    request("POST",path+"/resolve",503,{"blueprintId":987654321,"instance":"ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee"},control=True)
+    request("POST",path+"/resolve",409,{"blueprintId":987654321,"instance":"ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee"},control=True)
     state = request("POST",path+"/resolve",200,body,control=True)
     assert state["state"] == "RETIRED" and state["pipelineId"] == 0
     request("POST",path+"/start",403,body)
@@ -163,7 +165,9 @@ def verify_collection_receipts():
     subprocess.run(["docker","restart",NAME],check=True,stdout=subprocess.DEVNULL)
     ready()
     assert request("POST",path+"/start",200,body,control=True)==state
-    request("POST",path+"/start",503,{"blueprintId":987654322,"instance":instance},control=True)
+    request("POST",path+"/start",409,{"blueprintId":987654322,"instance":instance},control=True)
+    request("POST", "/cci/collection-requests/not-a-uuid/start", 400, body, control=True)
+    request("POST", "/cci/collection-requests/77777777-bbbb-cccc-dddd-eeeeeeeeeeee/start", 404, body, control=True)
     # A real pipeline and receipt commit together; ignore the first reply and resolve by UUID.
     bp=request("POST","/blueprints",201,{"name":"cci-receipt-smoke","enable":True,"mode":"ADVANCED",
         "cronConfig":"0 0 1 1 *","plan":[[{"plugin":"gitextract","subtasks":["extractRepoMeta"],
@@ -189,6 +193,49 @@ def verify_collection_receipts():
     subprocess.run(["docker","restart",NAME],check=True,stdout=subprocess.DEVNULL)
     ready()
     assert request("POST",bound_path+"/resolve",200,body,control=True)==ended
+    # DevLake UI uses DELETE /pipelines/:id. It must preserve durable end evidence.
+    ui_path = "/cci/collection-requests/88888888-bbbb-cccc-dddd-eeeeeeeeeeee"
+    ui_started = request("POST", ui_path+"/start", 200, body, control=True)
+    ui_id = ui_started["pipelineId"]
+    request("DELETE", f"/pipelines/{ui_id}", 200)
+    ui_ended = request("POST", ui_path+"/resolve", 200, body, control=True)
+    assert ui_ended["ended"] and not ui_ended["succeeded"]
+    request("DELETE", f"/pipelines/{ui_id}", 200)  # idempotent, no recursive dispatch
+    request("POST", f"/pipelines/{ui_id}/rerun", 409, {})
+    subprocess.run(["docker", "restart", NAME], check=True, stdout=subprocess.DEVNULL)
+    ready()
+    assert request("POST", ui_path+"/resolve", 200, body, control=True) == ui_ended
+
+    # Ordinary trigger/cancel/rerun remain usable; both admission orders are safe.
+    ordinary = request("POST", f"/blueprints/{bp_id}/trigger", 200, {})
+    ordinary_id = ordinary["id"]
+    request("DELETE", f"/pipelines/{ordinary_id}", 200)
+    request("POST", f"/pipelines/{ordinary_id}/rerun", 200, {})
+    conflict_path = "/cci/collection-requests/99999999-bbbb-cccc-dddd-eeeeeeeeeeee"
+    request("POST", conflict_path+"/start", 400, body, control=True)
+    request("DELETE", f"/pipelines/{ordinary_id}", 200)
+    receipt = request("POST", conflict_path+"/start", 200, body, control=True)
+    request("POST", f"/pipelines/{ordinary_id}/rerun", 409, {})
+    request("DELETE", f"/pipelines/{receipt['pipelineId']}", 200)
+
+    # Race legacy rerun against receipt admission: at most one pending pipeline.
+    barrier = threading.Barrier(2)
+    race_path = "/cci/collection-requests/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    def start_race():
+        barrier.wait()
+        return request("POST", race_path+"/start", (200, 400), body, control=True)
+    def rerun_race():
+        barrier.wait()
+        return request("POST", f"/pipelines/{ordinary_id}/rerun", (200, 409), {})
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(start_race), pool.submit(rerun_race)]
+        for future in futures:
+            future.result()
+    pending = request("GET", f"/pipelines?blueprint_id={bp_id}&pending=1", 200)
+    assert pending["count"] == 1, "receipt start and rerun admitted duplicate pending pipelines"
+    for pipeline in pending["pipelines"]:
+        request("DELETE", f"/pipelines/{pipeline['id']}", 200)
+
 
 
 def main():

@@ -295,3 +295,23 @@ Receipt creation uses an ordinary InnoDB transaction, without MySQL `LOCK TABLES
 Receipt-owned queued cancellation serializes with dequeue through commit, checks that no task/subtask started, and atomically records terminal task/pipeline timestamps. The cancel response is still not the end certificate: callers resolve again. Legacy rerun rejects receipt-owned pipelines so a verified terminal receipt cannot be revived. The image smoke disables queue consumption to deterministically verify queued cancellation and restart durability; it is not a live tool-collection acceptance test.
 
 The capability includes the durable database `instance` UUID. CCI must persist it before dispatch and include it in all start/resolve/cancel bodies; receipts echo it. A different database/endpoint rejects the request before writing even a retirement marker. Restoring/cloning this database must preserve its execution isolation: copying a database also copies this identity and must not create two concurrently active backends.
+
+Receipt-managed pipelines cancelled through DevLake's existing UI/API
+(`DELETE /pipelines/:id`) use the same dequeue-safe cancellation as the CCI
+receipt endpoint. Pending pipelines receive atomic task/pipeline finish evidence;
+already-started pipelines retain legacy task cancellation and must still prove
+termination on a later resolve. Ordinary pipelines keep their legacy cancellation
+behavior. Cancellation dispatch does not recurse.
+
+Receipt errors preserve known 4xx statuses (invalid identity 400, missing blueprint
+404, instance/identity conflict 409); unexpected/storage failures remain 503 with
+no internal error details in the response. No 4xx response is evidence that a
+previously dispatched request did not run.
+
+Source-control pipeline admission is a shared fence, not mutual exclusion between
+pipeline writers. Receipt start and legacy rerun therefore share the pipeline
+creation mutex through transaction completion. A legacy rerun is rejected with
+409 while the same blueprint has a pending receipt; if rerun wins first, receipt
+start observes the existing pending pipeline and is rejected. Unrelated ordinary
+reruns retain their previous validation and database transaction path. This relies
+on the existing single-backend-per-database deployment assumption.

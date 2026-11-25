@@ -208,7 +208,7 @@ func CancelReceiptPipeline(id uint64) (err errors.Error) {
 		return err
 	}
 	if pipeline.Status != models.TASK_CREATED || pipeline.BeganAt != nil {
-		return CancelPipeline(id)
+		return cancelPipelineWithoutReceipt(id)
 	}
 	tx := db.Begin()
 	defer func() {
